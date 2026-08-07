@@ -1,5 +1,9 @@
 """
-Interactive Streamlit dashboard for the Thai Dividend Yield Portfolio backtest.
+Dashboard v3 — capped proportional weighting (replaces the v1/v2 LP dashboards).
+Toggle secondary stocks (off = excluded from the formula entirely) + toggle trim_outliers;
+weights are recomputed live via water-filling. One portfolio per (entry, method), measured at
+4 checkpoints (3/6/9/12m). Capital 100M baht.
+
 Run:  streamlit run src/dashboard.py
 """
 import os
@@ -8,222 +12,265 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+from weighting import water_fill
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-DATA = os.path.join(ROOT, "data")
-OUT = os.path.join(ROOT, "output")
+DATA = os.path.join(os.path.dirname(HERE), "data")
 
 CORE = ["AOT", "OR", "KTB", "PTT", "PTTEP"]
-MORDER = ["naive", "avg_3_5y", "yield_based", "growth_trend"]
-MCOLORS = {"naive": "#4C72B0", "avg_3_5y": "#DD8452", "yield_based": "#55A868", "growth_trend": "#C44E52"}
-HOLDINGS = [3, 6, 9, 12]
+SECONDARY = ["SCB", "BBL", "KBANK", "TTB", "BAY"]
+CORE_SET = set(CORE)
+METHODS = ["avg_yield", "latest_yield", "avg_total_return", "growth_trend"]
+MLABEL = {"avg_yield": "Yield เฉลี่ย", "latest_yield": "Yield ล่าสุด",
+          "avg_total_return": "Total return เฉลี่ย", "growth_trend": "Growth trend"}
+MCOLORS = {"avg_yield": "#4C72B0", "latest_yield": "#DD8452",
+           "avg_total_return": "#55A868", "growth_trend": "#C44E52"}
+CHECKPOINTS = [3, 6, 9, 12]
+NAMES = {"AOT": "ท่าอากาศยานไทย", "OR": "ปตท.น้ำมันฯ(OR)", "KTB": "กรุงไทย", "PTT": "ปตท.",
+         "PTTEP": "ปตท.สผ.", "SCB": "SCBX", "BBL": "กรุงเทพ", "KBANK": "กสิกรไทย",
+         "TTB": "ทหารไทยธนชาต", "BAY": "กรุงศรีฯ"}
 
-st.set_page_config(page_title="Thai Dividend Backtest", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Thai Dividend Backtest v3", page_icon="⚖️", layout="wide")
 
 
 def eorder(s):
     return s.map(lambda e: (int(e[:4]), int(e[5])))
 
 
-@st.cache_data
+@st.cache_resource   # cache_resource: no pickling (rl_key holds itertuples namedtuples)
 def load():
-    d = {}
-    d["res"] = pd.read_csv(os.path.join(DATA, "backtest_results.csv"))
-    d["w"] = pd.read_csv(os.path.join(DATA, "portfolio_weights.csv"))
-    d["fr"] = pd.read_csv(os.path.join(DATA, "forecast_return.csv"))
-    d["rbs"] = pd.read_csv(os.path.join(DATA, "realized_by_stock.csv"))
-    d["slots"] = pd.read_csv(os.path.join(DATA, "expected_dividend_months.csv"))
-    d["div"] = pd.read_csv(os.path.join(DATA, "dividend_history.csv"), parse_dates=["ex_dividend_date"])
-    d["price"] = pd.read_csv(os.path.join(DATA, "price_history.csv"), parse_dates=["date"])
-    d["comp"] = pd.read_csv(os.path.join(DATA, "data_completeness.csv"))
-    # per-stock accuracy (weight-independent)
-    m = d["fr"].merge(d["rbs"][d["rbs"].pending == False][["entry_id", "holding_period", "ticker", "realized_div_return"]],
-                      on=["entry_id", "holding_period", "ticker"], how="inner")
-    m["error"] = m["realized_div_return"] - m["forecast_dividend_return"]
-    d["acc"] = m
-    return d
+    sc = pd.read_csv(os.path.join(DATA, "v3_scores.csv"))
+    rl = pd.read_csv(os.path.join(DATA, "v3_realized.csv"))
+    div = pd.read_csv(os.path.join(DATA, "dividend_history.csv"), parse_dates=["ex_dividend_date"])
+    price = pd.read_csv(os.path.join(DATA, "price_history.csv"), parse_dates=["date"])
+    sc_key = {k: g.set_index("ticker") for k, g in sc.groupby(["entry_id", "method", "trim"])}
+    rl_key = {(r.entry_id, r.ticker, r.checkpoint): r for r in rl.itertuples()}
+    entries = sorted(sc.entry_id.unique(), key=lambda e: (int(e[:4]), int(e[5])))
+    return sc, rl, div, price, sc_key, rl_key, entries
 
 
-D = load()
-res_all = D["res"]
+SC, RL, DIV, PRICE, SC_KEY, RL_KEY, ENTRIES = load()
+
+
+@st.cache_data(show_spinner="คำนวณ water-filling ใหม่ตาม universe/trim ที่เลือก...")
+def run_v3(selected_secondaries, trim, _sc_key, _rl_key):
+    universe = CORE + list(selected_secondaries)
+    wrows, rrows = [], []
+    for eid in ENTRIES:
+        for method in METHODS:
+            sub = _sc_key.get((eid, method, trim))
+            if sub is None:
+                continue
+            enabled = []
+            for t in universe:
+                if t not in sub.index:
+                    continue
+                if pd.isna(sub.loc[t, "price_entry"]):
+                    continue
+                if (t not in CORE_SET) and (not bool(sub.loc[t, "has_history"])):
+                    continue  # secondary needs history to be scored
+                enabled.append(t)
+            smap = {t: float(sub.loc[t, "raw_score"]) for t in enabled}
+            w = water_fill(smap, enabled, CORE_SET)
+            for t, wt in w.items():
+                wrows.append({"entry_id": eid, "method": method, "ticker": t, "weight": wt,
+                              "raw_score": smap.get(t, 0.0)})
+            for h in CHECKPOINTS:
+                recs = {t: _rl_key.get((eid, t, h)) for t in w}
+                if any(r is None or r.pending for r in recs.values()):
+                    rrows.append({"entry_id": eid, "method": method, "checkpoint": h,
+                                  "realized_dividend_return": np.nan, "capital_gain": np.nan,
+                                  "total_return": np.nan, "status": "pending"})
+                else:
+                    rdr = sum(wt * recs[t].realized_div_return for t, wt in w.items())
+                    cap = sum(wt * recs[t].capital_gain for t, wt in w.items())
+                    rrows.append({"entry_id": eid, "method": method, "checkpoint": h,
+                                  "realized_dividend_return": rdr, "capital_gain": cap,
+                                  "total_return": rdr + cap, "status": "realized"})
+    return pd.DataFrame(wrows), pd.DataFrame(rrows)
+
 
 # ---------------- Sidebar ----------------
-st.sidebar.title("📈 Thai Dividend Backtest")
-st.sidebar.caption("Walk-forward · 5 หุ้นหลัก · 2021Q4→2026Q3")
-methods = st.sidebar.multiselect("วิธี forecast", MORDER, default=MORDER)
-holds = st.sidebar.multiselect("Holding period (เดือน)", HOLDINGS, default=HOLDINGS)
-show_pending = st.sidebar.checkbox("รวม runs ที่ pending (ยังถือไม่ครบ)", value=False)
+st.sidebar.title("⚖️ Thai Dividend Backtest v3")
+st.sidebar.caption("Capped proportional weighting (floor 5% / ceiling 30%) · ทุน 100 ล้านบาท · "
+                   "entry รายไตรมาส 20 จุด (2021Q3→2026Q2)")
+st.sidebar.markdown("### 🏢 หุ้นหลัก (บังคับถือ 5–30%)")
+st.sidebar.write("· " + " · ".join(CORE))
+st.sidebar.markdown("### ➕➖ หุ้นรอง (ปิด = ตัดออกจากสูตร)")
+sel_sec = [s for s in SECONDARY if st.sidebar.checkbox(f"{s} — {NAMES[s]}", value=(s == "SCB"), key=f"s_{s}")]
+cbtn = st.sidebar.columns(2)
+if cbtn[0].button("เลือกทั้งหมด", use_container_width=True):
+    for s in SECONDARY: st.session_state[f"s_{s}"] = True
+    st.rerun()
+if cbtn[1].button("ล้างหุ้นรอง", use_container_width=True):
+    for s in SECONDARY: st.session_state[f"s_{s}"] = False
+    st.rerun()
 st.sidebar.markdown("---")
-st.sidebar.caption("แหล่งข้อมูล: yfinance (หลัก) + StockAnalysis.com (cross-check 6/6). "
-                   "ราคา split-adjusted ฐานปัจจุบัน ไม่ปรับปันผล.")
+trim = st.sidebar.toggle("Trim outliers (ตัด yield > p95)", value=True,
+                         help="มีผลกับวิธี 'Yield เฉลี่ย' เท่านั้น — ตัดค่า yield สูงผิดปกติออกด้านบน")
+capital = st.sidebar.number_input("เงินทุน (บาท)", value=100_000_000, step=10_000_000, format="%d")
+methods_sel = st.sidebar.multiselect("วิธีถ่วงน้ำหนัก", METHODS, default=METHODS,
+                                     format_func=lambda m: MLABEL[m]) or METHODS
+show_pending = st.sidebar.checkbox("รวม checkpoint ที่ pending", value=False)
 
-if not methods: methods = MORDER
-if not holds: holds = HOLDINGS
+universe = CORE + sel_sec
+W, R = run_v3(tuple(sel_sec), trim, SC_KEY, RL_KEY)
+Wf = W[W.method.isin(methods_sel)]
+Rf = R[R.method.isin(methods_sel)]
+Rr = Rf[Rf.status == "realized"]
+Rview = Rf if show_pending else Rr
 
-res = res_all[res_all.forecast_method.isin(methods) & res_all.holding_period.isin(holds)].copy()
-res_r = res[res.status == "realized"].copy()
-view = res if show_pending else res_r
+st.title("Backtest พอร์ตหุ้นปันผลไทย v3 — Capped Proportional Weighting")
+st.caption(f"Universe: **{len(universe)} ตัว** = 5 หลัก + {', '.join(sel_sec) if sel_sec else '(ไม่มีหุ้นรอง)'} · "
+           f"trim outliers: **{'เปิด' if trim else 'ปิด'}** · แต่ละวิธีถือ 1 พอร์ต วัดผลที่ 4 checkpoint")
 
-st.title("รายงานผล Backtest — พอร์ตหุ้นปันผลไทย")
-st.caption("Interactive dashboard · maximize ผลตอบแทนจากเงินปันผล · หุ้นหลักบังคับถือ ≥5%")
-
-# ---------------- KPI row ----------------
-acc_f = D["acc"][D["acc"].method.isin(methods) & D["acc"].holding_period.isin(holds)]
-best_method = acc_f.groupby("method").error.apply(lambda s: s.abs().mean()).sort_values().index[0] if len(acc_f) else "-"
+# diversification: effective number of stocks (1/HHI), averaged
+def eff_n(df):
+    return df.groupby(["entry_id", "method"]).weight.apply(lambda s: 1/ (s**2).sum()).mean()
+st.markdown("##### 📌 ภาพรวมทั้ง backtest (เฉลี่ยข้าม 20 entries × วิธีที่เลือก × checkpoint)")
 k = st.columns(4)
-k[0].metric("วิธี forecast แม่นสุด", best_method,
-            help="MAE ต่ำสุดของ realized−forecast dividend return ต่อหุ้น")
-k[1].metric("Total return เฉลี่ย", f"{res_r.total_return.mean()*100:,.2f}%" if len(res_r) else "—")
-k[2].metric("ปันผล realized เฉลี่ย", f"{res_r.realized_dividend_return.mean()*100:,.2f}%" if len(res_r) else "—")
-k[3].metric("Runs (realized/รวม)", f"{(res.status=='realized').sum()}/{len(res)}")
+k[0].metric("จำนวนหุ้นใน universe", f"{len(universe)} ตัว")
+k[1].metric("ปันผลเฉลี่ย · ทั้ง backtest", f"{Rr.realized_dividend_return.mean()*100:,.2f}%" if len(Rr) else "—",
+            f"≈ {Rr.realized_dividend_return.mean()*capital:,.0f} บาท" if len(Rr) else None,
+            help="ค่าเฉลี่ยของทุก entry point ไม่ใช่ของ entry ที่เลือกในแท็บด้านล่าง")
+k[2].metric("Total return เฉลี่ย · ทั้ง backtest", f"{Rr.total_return.mean()*100:,.2f}%" if len(Rr) else "—",
+            f"≈ {Rr.total_return.mean()*capital:,.0f} บาท" if len(Rr) else None,
+            help="ค่าเฉลี่ยของทุก entry point ไม่ใช่ของ entry ที่เลือกในแท็บด้านล่าง")
+k[3].metric("การกระจายตัว (eff. #หุ้น)", f"{eff_n(Wf):.1f} ตัว",
+            help="1/Σw² — ยิ่งสูงยิ่งกระจาย (v1/v2 LP corner ≈ 1.5)")
 
-tabs = st.tabs(["📊 ภาพรวม & เทียบวิธี", "🎯 ความแม่น Forecast", "💼 น้ำหนักพอร์ต",
-                "📈 Backtest Timeline", "📅 Dividend Patterns", "🔢 Raw Data"])
+tabs = st.tabs(["🎛️ Universe & น้ำหนัก", "📊 เทียบวิธี × checkpoint", "🧮 Scores (วิธีคำนวณ)",
+                "📈 Timeline", "📅 Dividend patterns", "🔢 Raw data"])
 
-# ================= Tab 1: Overview / method comparison =================
+# ===== Tab 1: weights =====
 with tabs[0]:
-    st.subheader("เปรียบเทียบ 4 วิธี × Holding period")
-    metric = st.radio("เลือกตัวชี้วัด", ["total_return", "realized_dividend_return", "capital_gain_loss",
-                      "forecast_dividend_return"], horizontal=True, key="cmp_metric")
-    agg = res_r.groupby(["holding_period", "forecast_method"])[metric].mean().reset_index()
-    agg[metric] = agg[metric] * 100
-    fig = px.bar(agg, x="holding_period", y=metric, color="forecast_method", barmode="group",
-                 color_discrete_map=MCOLORS, category_orders={"forecast_method": MORDER},
-                 labels={"holding_period": "Holding (เดือน)", metric: f"{metric} (%)"})
+    st.subheader("น้ำหนักพอร์ต")
+    st.caption("พอร์ตของ **entry point × วิธี ที่เลือกด้านล่าง** (เฉพาะจุดนี้เท่านั้น ไม่ใช่ค่าเฉลี่ย) — "
+               "เปลี่ยน entry เพื่อดูน้ำหนัก + ผลตอบแทนของจุดนั้น")
+    c = st.columns(2)
+    sel_e = c[0].selectbox("Entry point", ENTRIES, index=len(ENTRIES)-1)
+    sel_m = c[1].selectbox("วิธี", methods_sel, format_func=lambda m: MLABEL[m])
+    ws = W[(W.entry_id == sel_e) & (W.method == sel_m)].copy()
+    ws["กลุ่ม"] = ws.ticker.map(lambda t: "หลัก" if t in CORE_SET else "รอง")
+    ws["บาท"] = (ws.weight * capital).round(0)
+    ws = ws.sort_values("weight", ascending=False)
+    cc = st.columns([1.5, 1])
+    with cc[0]:
+        fig = px.bar(ws, x="ticker", y="weight", color="กลุ่ม",
+                     color_discrete_map={"หลัก": "#0f2b46", "รอง": "#55A868"},
+                     text=ws.weight.map(lambda v: f"{v*100:.1f}%"))
+        fig.add_hline(y=0.30, line_dash="dash", line_color="red", annotation_text="ceiling 30%")
+        fig.add_hline(y=0.05, line_dash="dot", line_color="orange", annotation_text="core floor 5%")
+        fig.update_layout(height=430, yaxis_tickformat=".0%", title=f"{sel_e} · {MLABEL[sel_m]}")
+        st.plotly_chart(fig, use_container_width=True)
+    with cc[1]:
+        st.dataframe(ws[["ticker", "กลุ่ม", "weight", "บาท"]]
+                     .assign(weight=lambda d: (d.weight*100).round(2)),
+                     use_container_width=True, hide_index=True, height=430)
+    st.caption(f"ผลรวมน้ำหนัก = {ws.weight.sum()*100:.1f}% · หุ้นในพอร์ต {len(ws)} ตัว · "
+               f"เม็ดเงินรวม {ws['บาท'].sum():,.0f} บาท")
+
+    st.markdown(f"**ผลตอบแทนของพอร์ตนี้โดยเฉพาะ** ({sel_e} · {MLABEL[sel_m]}) — ซื้อครั้งเดียว วัดที่ 4 checkpoint")
+    rr = R[(R.entry_id == sel_e) & (R.method == sel_m)].sort_values("checkpoint").copy()
+    disp = pd.DataFrame({
+        "checkpoint": rr.checkpoint.map(lambda h: f"{h} เดือน"),
+        "ปันผล %": (rr.realized_dividend_return * 100).round(2),
+        "capital gain %": (rr.capital_gain * 100).round(2),
+        "total return %": (rr.total_return * 100).round(2),
+        "total (บาท)": (rr.total_return * capital).round(0),
+        "สถานะ": rr.status.map({"realized": "✅ วัดผลแล้ว", "pending": "⏳ ยังไม่ครบ"}),
+    })
+    st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    st.subheader("น้ำหนักเฉลี่ยต่อหุ้น (เฉลี่ยทั้ง backtest)")
+    st.caption("น้ำหนักเฉลี่ยของแต่ละหุ้นตลอด 20 entries × วิธีที่เลือก — บอกว่าหุ้นไหนถูกให้น้ำหนักหนัก/เบาโดยรวม "
+               "(ต่างจากกราฟบนที่เป็นพอร์ตของ entry เดียว)")
+    aw = Wf.groupby("ticker").weight.mean().reindex(universe).reset_index()
+    aw["กลุ่ม"] = aw.ticker.map(lambda t: "หลัก" if t in CORE_SET else "รอง")
+    figa = px.bar(aw.sort_values("weight", ascending=False), x="ticker", y="weight", color="กลุ่ม",
+                  color_discrete_map={"หลัก": "#0f2b46", "รอง": "#55A868"},
+                  text=aw.sort_values("weight", ascending=False).weight.map(lambda v: f"{v*100:.1f}%"))
+    figa.update_layout(height=340, yaxis_tickformat=".0%")
+    st.plotly_chart(figa, use_container_width=True)
+
+# ===== Tab 2: comparison =====
+with tabs[1]:
+    st.subheader("เปรียบเทียบวิธี × checkpoint")
+    unit = st.radio("หน่วย", ["% ผลตอบแทน", "บาท"], horizontal=True)
+    metric = st.radio("ตัวชี้วัด", ["total_return", "realized_dividend_return", "capital_gain"], horizontal=True)
+    agg = Rr.groupby(["checkpoint", "method"])[metric].mean().reset_index()
+    agg["val"] = agg[metric] * (capital if unit == "บาท" else 100)
+    fig = px.bar(agg, x="checkpoint", y="val", color="method", barmode="group",
+                 color_discrete_map=MCOLORS, category_orders={"method": METHODS},
+                 labels={"checkpoint": "Checkpoint (เดือน)", "val": unit})
+    fig.for_each_trace(lambda t: t.update(name=MLABEL.get(t.name, t.name)))
     fig.update_layout(height=430, legend_title="วิธี")
     st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("การกระจาย (distribution)")
-    valcol = st.selectbox("ตัวแปร", ["total_return", "realized_dividend_return", "capital_gain_loss"], key="box")
-    bx = res_r.copy(); bx[valcol] = bx[valcol] * 100
-    figb = px.box(bx, x="holding_period", y=valcol, color="forecast_method",
-                  color_discrete_map=MCOLORS, category_orders={"forecast_method": MORDER},
-                  labels={"holding_period": "Holding (เดือน)", valcol: f"{valcol} (%)"}, points=False)
-    figb.update_layout(height=430, legend_title="วิธี")
+    st.subheader("การกระจาย total return")
+    bx = Rr.copy(); bx["v"] = bx.total_return*100
+    figb = px.box(bx, x="checkpoint", y="v", color="method", points=False,
+                  color_discrete_map=MCOLORS, category_orders={"method": METHODS},
+                  labels={"checkpoint": "Checkpoint (เดือน)", "v": "total return (%)"})
+    figb.for_each_trace(lambda t: t.update(name=MLABEL.get(t.name, t.name)))
+    figb.update_layout(height=430)
     st.plotly_chart(figb, use_container_width=True)
 
-# ================= Tab 2: Forecast accuracy =================
-with tabs[1]:
-    st.subheader("ความแม่นของ forecast ปันผล (ต่อหุ้น, ไม่ขึ้นกับน้ำหนัก)")
-    st.caption("error = realized − forecast dividend return (pp). MAE ต่ำ = แม่นกว่า")
-    a = acc_f.copy()
-    ov = a.groupby("method").agg(n=("error", "size"),
-                                 bias_pp=("error", lambda s: s.mean()*100),
-                                 MAE_pp=("error", lambda s: s.abs().mean()*100),
-                                 RMSE_pp=("error", lambda s: np.sqrt((s**2).mean())*100)).reset_index().sort_values("MAE_pp")
-    c1, c2 = st.columns([1, 1.3])
-    with c1:
-        st.dataframe(ov.round(3), use_container_width=True, hide_index=True)
-    with c2:
-        figa = px.bar(ov, x="method", y="MAE_pp", color="method", color_discrete_map=MCOLORS,
-                      category_orders={"method": MORDER}, labels={"MAE_pp": "MAE (pp)"})
-        figa.update_layout(height=340, showlegend=False, title="MAE ต่อวิธี (ต่ำ=ดี)")
-        st.plotly_chart(figa, use_container_width=True)
-
-    st.subheader("MAE แยกตาม holding period")
-    byh = a.groupby(["method", "holding_period"]).error.apply(lambda s: s.abs().mean()*100).reset_index(name="MAE_pp")
-    figh = px.line(byh, x="holding_period", y="MAE_pp", color="method", markers=True,
-                   color_discrete_map=MCOLORS, category_orders={"method": MORDER},
-                   labels={"holding_period": "Holding (เดือน)", "MAE_pp": "MAE (pp)"})
-    figh.update_layout(height=380)
-    st.plotly_chart(figh, use_container_width=True)
-
-    st.subheader("Forecast vs Realized (รายจุด)")
-    sc = a.copy()
-    fig_sc = px.scatter(sc, x="forecast_dividend_return", y="realized_div_return", color="ticker",
-                        symbol="method", hover_data=["entry_id", "holding_period"],
-                        labels={"forecast_dividend_return": "forecast div return",
-                                "realized_div_return": "realized div return"})
-    mx = max(sc.forecast_dividend_return.max(), sc.realized_div_return.max()) if len(sc) else 0.1
-    fig_sc.add_trace(go.Scatter(x=[0, mx], y=[0, mx], mode="lines", line=dict(dash="dash", color="grey"),
-                                name="perfect", showlegend=True))
-    fig_sc.update_layout(height=460)
-    st.plotly_chart(fig_sc, use_container_width=True)
-
-# ================= Tab 3: Portfolio weights =================
+# ===== Tab 3: scores =====
 with tabs[2]:
-    st.subheader("น้ำหนักพอร์ตต่อ run")
-    c = st.columns(3)
-    ep_list = sorted(res_all.entry_id.unique(), key=lambda e: (int(e[:4]), int(e[5])))
-    sel_e = c[0].selectbox("Entry point", ep_list, index=len(ep_list)-1)
-    sel_h = c[1].selectbox("Holding (เดือน)", holds)
-    sel_m = c[2].selectbox("วิธี forecast", methods)
-    wsub = D["w"][(D["w"].entry_id == sel_e) & (D["w"].holding_period == sel_h) & (D["w"].forecast_method == sel_m)]
-    wsub = wsub.set_index("ticker").reindex(CORE).reset_index()
-    figw = px.bar(wsub, x="ticker", y="weight", color="ticker", text=wsub.weight.map(lambda v: f"{v*100:.0f}%"))
-    figw.add_hline(y=0.05, line_dash="dash", line_color="red", annotation_text="floor 5%")
-    figw.update_layout(height=360, showlegend=False, yaxis_tickformat=".0%",
-                       title=f"{sel_e} · {sel_h}m · {sel_m}")
-    st.plotly_chart(figw, use_container_width=True)
+    st.subheader("Raw score ต่อหุ้น × วิธี (โปร่งใส — ที่มาของน้ำหนัก)")
+    st.caption("score = ค่าที่ใช้ถ่วงน้ำหนักตามสัดส่วน (บน yield). trim outliers มีผลเฉพาะ 'Yield เฉลี่ย'")
+    e2 = st.selectbox("Entry point", ENTRIES, index=len(ENTRIES)-1, key="e_scores")
+    rows = []
+    for m in METHODS:
+        sub = SC_KEY.get((e2, m, trim))
+        if sub is None: continue
+        for t in universe:
+            if t in sub.index:
+                rows.append({"ticker": t, "method": MLABEL[m], "raw_score": sub.loc[t, "raw_score"]})
+    sdf = pd.DataFrame(rows)
+    if len(sdf):
+        piv = sdf.pivot_table(index="ticker", columns="method", values="raw_score").reindex(universe)
+        figh = px.imshow(piv, text_auto=".4f", color_continuous_scale="Blues", aspect="auto",
+                         labels=dict(color="raw_score"))
+        figh.update_layout(height=420)
+        st.plotly_chart(figh, use_container_width=True)
+        st.caption("ยิ่ง score สูง → น้ำหนักยิ่งมาก (ก่อนบีบด้วย floor/ceiling)")
 
-    st.subheader("น้ำหนักเฉลี่ย (heatmap: หุ้น × วิธี)")
-    wf = D["w"][D["w"].forecast_method.isin(methods) & D["w"].holding_period.isin(holds)]
-    hm = wf.pivot_table(index="ticker", columns="forecast_method", values="weight", aggfunc="mean").reindex(CORE)[methods]
-    fighm = px.imshow(hm*100, text_auto=".1f", color_continuous_scale="Greens", aspect="auto",
-                      labels=dict(color="avg wt %"))
-    fighm.update_layout(height=360)
-    st.plotly_chart(fighm, use_container_width=True)
-
-    st.subheader("น้ำหนักเฉลี่ยรวมต่อหุ้น")
-    ov_w = wf.groupby("ticker").weight.mean().reindex(CORE).reset_index()
-    figo = px.bar(ov_w, x="ticker", y="weight", color="ticker", text=ov_w.weight.map(lambda v: f"{v*100:.1f}%"))
-    figo.update_layout(height=320, showlegend=False, yaxis_tickformat=".0%")
-    st.plotly_chart(figo, use_container_width=True)
-
-# ================= Tab 4: Timeline =================
+# ===== Tab 4: timeline =====
 with tabs[3]:
-    st.subheader("Timeline: total return จริง เทียบ forecast ปันผล")
-    th = st.select_slider("Holding period (เดือน)", options=HOLDINGS, value=6)
-    tl = res_all[(res_all.holding_period == th) & (res_all.forecast_method.isin(methods)) & (res_all.status == "realized")].copy()
+    st.subheader("Timeline: total return ต่อ entry")
+    th = st.select_slider("Checkpoint (เดือน)", options=CHECKPOINTS, value=12)
+    tl = R[(R.checkpoint == th) & (R.method.isin(methods_sel)) & (R.status == "realized")]
     order = sorted(tl.entry_id.unique(), key=lambda e: (int(e[:4]), int(e[5])))
     fig = go.Figure()
-    subf = tl[tl.forecast_method == methods[0]].sort_values("entry_id", key=eorder)
-    fig.add_bar(x=subf.entry_id, y=subf.forecast_dividend_return*100, name="forecast div", marker_color="lightgrey", opacity=0.5)
-    for m in methods:
-        s = tl[tl.forecast_method == m].sort_values("entry_id", key=eorder)
+    for m in methods_sel:
+        s = tl[tl.method == m].sort_values("entry_id", key=eorder)
         fig.add_trace(go.Scatter(x=s.entry_id, y=s.total_return*100, mode="lines+markers",
-                                 name=f"{m} total", line=dict(color=MCOLORS[m])))
-    fig.update_layout(height=470, xaxis={"categoryorder": "array", "categoryarray": order},
-                      yaxis_title="Return (%)", legend_title="")
+                                 name=MLABEL[m], line=dict(color=MCOLORS[m])))
+    fig.update_layout(height=460, xaxis={"categoryorder": "array", "categoryarray": order},
+                      yaxis_title="total return (%)")
     st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(Rview.sort_values(["entry_id", "method", "checkpoint"]),
+                 use_container_width=True, hide_index=True, height=300)
+    st.download_button("⬇️ ดาวน์โหลดผล (universe/trim นี้)", Rview.to_csv(index=False).encode("utf-8"),
+                       f"v3_results_{'_'.join(sel_sec) or 'core'}_{'trim' if trim else 'notrim'}.csv", "text/csv")
 
-    st.subheader("ตารางผล (filtered)")
-    st.dataframe(view.sort_values(["entry_id", "holding_period", "forecast_method"], key=lambda s: eorder(s) if s.name=="entry_id" else s),
-                 use_container_width=True, hide_index=True)
-    st.download_button("⬇️ ดาวน์โหลด CSV (filtered)", view.to_csv(index=False).encode("utf-8"),
-                       "backtest_results_filtered.csv", "text/csv")
-
-# ================= Tab 5: Dividend patterns =================
+# ===== Tab 5: dividends =====
 with tabs[4]:
-    st.subheader("รูปแบบการจ่ายปันผล (dividend slots)")
-    tk = st.selectbox("เลือกหุ้น", CORE)
-    dv = D["div"][D["div"].ticker == tk].copy()
-    dv["year"] = dv.ex_dividend_date.dt.year; dv["month"] = dv.ex_dividend_date.dt.month
-    figd = px.scatter(dv, x="ex_dividend_date", y="dps_amount", size="dps_amount",
-                      color="month", color_continuous_scale="Turbo",
+    tk = st.selectbox("เลือกหุ้น", universe, format_func=lambda t: f"{t} — {NAMES[t]}")
+    dv = DIV[DIV.ticker == tk].copy(); dv["month"] = dv.ex_dividend_date.dt.month
+    figd = px.scatter(dv, x="ex_dividend_date", y="dps_amount", size="dps_amount", color="month",
+                      color_continuous_scale="Turbo", title=f"{tk} — ประวัติปันผล",
                       labels={"ex_dividend_date": "วัน XD", "dps_amount": "DPS (บาท)"})
-    figd.update_layout(height=340, title=f"{tk} — ประวัติปันผล (ex-date)")
+    figd.update_layout(height=340)
     st.plotly_chart(figd, use_container_width=True)
-    cc = st.columns(2)
-    with cc[0]:
-        st.caption("จำนวนครั้งจ่ายต่อเดือน (สกัด slot)")
-        mm = dv.pivot_table(index="month", values="dps_amount", aggfunc="count").reindex(range(1,13), fill_value=0)
-        st.bar_chart(mm)
-    with cc[1]:
-        st.caption("Slot ที่ engine สกัดได้ ณ entry ล่าสุด")
-        sl = D["slots"][(D["slots"].ticker == tk) & (D["slots"].entry_id == "2026Q3")]
-        st.write(sl[["n_slots", "slots"]].to_dict("records"))
     st.caption("ราคาย้อนหลัง (split-adjusted)")
-    pc = D["price"][D["price"].ticker == tk]
-    st.line_chart(pc.set_index("date")["close_price"])
+    st.line_chart(PRICE[PRICE.ticker == tk].set_index("date")["close_price"])
 
-# ================= Tab 6: Raw data =================
+# ===== Tab 6: raw =====
 with tabs[5]:
-    st.subheader("สำรวจข้อมูลดิบ")
-    which = st.selectbox("เลือกตาราง", ["backtest_results", "portfolio_weights", "forecast_return",
-                                        "realized_by_stock", "expected_slots", "data_completeness"])
-    dmap = {"backtest_results": res_all, "portfolio_weights": D["w"], "forecast_return": D["fr"],
-            "realized_by_stock": D["rbs"], "expected_slots": D["slots"], "data_completeness": D["comp"]}
-    st.dataframe(dmap[which], use_container_width=True, hide_index=True)
-    st.caption("ไฟล์เต็มทั้งหมดอยู่ใน data/ และ output/thai_dividend_backtest.xlsx")
+    which = st.selectbox("ตาราง", ["weights (universe/trim นี้)", "results (universe/trim นี้)",
+                                    "v3_scores (ดิบ)", "v3_realized (ดิบ)"])
+    dmap = {"weights (universe/trim นี้)": W, "results (universe/trim นี้)": R,
+            "v3_scores (ดิบ)": SC, "v3_realized (ดิบ)": RL}
+    st.dataframe(dmap[which], use_container_width=True, hide_index=True, height=460)

@@ -1,8 +1,8 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "dashboard_v2", "runtimeExecutable": "streamlit",
-      "runtimeArgs": ["run", "src/dashboard_v2.py", "--server.port", "8502", "--server.headless", "true", "--browser.gatherUsageStats", "false"],
-      "port": 8502 }
+    { "name": "dashboard", "runtimeExecutable": "streamlit",
+      "runtimeArgs": ["run", "src/dashboard.py", "--server.port", "8501", "--server.headless", "true", "--browser.gatherUsageStats", "false"],
+      "port": 8501 }
   ]
 }

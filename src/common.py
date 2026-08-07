@@ -96,6 +96,23 @@ def price_asof_onafter(prices_t, target):
     r = sub.iloc[0]
     return r["date"], float(r["close_price"])
 
+def price_asof_onbefore(prices_t, target):
+    """Last trading row for one ticker with date <= target (nearest prior). (date, close) or (None,None)."""
+    sub = prices_t[prices_t["date"] <= pd.Timestamp(target)]
+    if sub.empty:
+        return None, None
+    r = sub.iloc[-1]
+    return r["date"], float(r["close_price"])
+
+
+def price_near(prices_t, target):
+    """Price nearest to target: prefer on-or-before, else on-or-after."""
+    d, c = price_asof_onbefore(prices_t, target)
+    if c is not None:
+        return d, c
+    return price_asof_onafter(prices_t, target)
+
+
 def price_at_entry(prices_t, entry_date):
     """Price for a ticker at the entry date; if the ticker didn't trade yet -> (None,None)."""
     return price_asof_onafter(prices_t, entry_date)
