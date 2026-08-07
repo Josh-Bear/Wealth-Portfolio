@@ -1,0 +1,11 @@
+ticker,group,name_th,sector
+AOT,core,บมจ. ท่าอากาศยานไทย,Transportation
+OR,core,บมจ. ปตท. น้ำมันและการค้าปลีก,Energy/Retail
+KTB,core,ธนาคารกรุงไทย,Banking
+PTT,core,บมจ. ปตท.,Energy
+PTTEP,core,บมจ. ปตท. สำรวจและผลิตปิโตรเลียม,Energy
+SCB,secondary,บมจ. เอสซีบี เอกซ์ (SCBX),Banking
+BBL,secondary,ธนาคารกรุงเทพ,Banking
+KBANK,secondary,ธนาคารกสิกรไทย,Banking
+TTB,secondary,ธนาคารทหารไทยธนชาต,Banking
+BAY,secondary,ธนาคารกรุงศรีอยุธยา,Banking
