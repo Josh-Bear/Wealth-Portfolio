@@ -1,0 +1,48 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+
+# ---- Streamlit ----
+.streamlit/secrets.toml
+
+# ---- OS ----
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+
+# ---- Editor / IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- Logs & temp ----
+*.log
+*.tmp
+tmp/
+scratch/
+
+# ---- Notes ----
+# data/ = validated source data (kept, reproducible via src/fetch_data.py)
+# output/ = generated reports & charts (kept; regenerate via src/phase78_report.py + src/make_pdf_report.py)
+# raw/ = audit copies of raw API payloads (kept as provenance/cross-check evidence)
+# To stop tracking raw dumps instead, uncomment:
+# raw/
