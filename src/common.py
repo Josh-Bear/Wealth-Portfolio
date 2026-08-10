@@ -62,6 +62,13 @@ def build_entry_points(prices):
     return pd.DataFrame(rows)
 
 
+def parse_entry_id(e):
+    """Chronological sort key for entry ids. Handles quarterly 'YYYYQn' and monthly 'YYYY-MM'."""
+    if "Q" in e:
+        y, q = e.split("Q"); return (int(y), int(q))
+    y, m = e.split("-"); return (int(y), int(m))
+
+
 def month_starts(n=60, last_ym=(2026, 8)):
     """n monthly (year, month, day=1) tuples ending at last_ym inclusive -> entry_id 'YYYY-MM'."""
     ly, lm = last_ym
@@ -99,6 +106,17 @@ def price_asof_onafter(prices_t, target):
 def price_asof_onbefore(prices_t, target):
     """Last trading row for one ticker with date <= target (nearest prior). (date, close) or (None,None)."""
     sub = prices_t[prices_t["date"] <= pd.Timestamp(target)]
+    if sub.empty:
+        return None, None
+    r = sub.iloc[-1]
+    return r["date"], float(r["close_price"])
+
+
+def price_before_strict(prices_t, target):
+    """Last trading row STRICTLY BEFORE target (date < target). (date, close) or (None, None).
+    Used for yields: the ex-dividend day's own close is already ex-drop, and a dividend with no
+    price strictly before it (e.g. predates price history) must be skipped, not fabricated."""
+    sub = prices_t[prices_t["date"] < pd.Timestamp(target)]
     if sub.empty:
         return None, None
     r = sub.iloc[-1]

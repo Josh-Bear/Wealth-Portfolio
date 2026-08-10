@@ -17,7 +17,6 @@ Reference default-universe result (all 10 on, trim=True):
 import os
 import numpy as np
 import pandas as pd
-from datetime import date
 from dateutil.relativedelta import relativedelta
 import common as C
 from weighting import water_fill
@@ -29,23 +28,20 @@ TR_WINDOW_M = 12          # rolling total-return window (shorter if history < th
 TR_MIN_DAYS = 60          # ignore windows shorter than this
 
 
-# ---------- entry points: quarterly 2021Q3 .. 2026Q2 ----------
+# ---------- entry points: monthly, 60 points 2021-09 .. 2026-08 (v4) ----------
 def v3_entries(prices):
-    tdays = pd.Index(sorted(prices["date"].unique()))
-    rows = []
-    for eid, qs in C.quarter_starts("2021Q3", "2026Q2"):
-        pos = tdays.searchsorted(pd.Timestamp(qs), side="left")
-        if pos < len(tdays):
-            rows.append({"entry_id": eid, "entry_date": tdays[pos]})
-    return pd.DataFrame(rows)
+    return C.build_entry_points_monthly(prices, n=60, last_ym=(2026, 8))[["entry_id", "entry_date"]]
 
 
-# ---------- per-dividend yields before entry ----------
+# ---------- per-dividend yields before entry (v4 yield_history) ----------
 def yields_before(divs_t, prices_t, entry):
+    """yield of each past dividend = dps / close STRICTLY BEFORE its ex-date.
+    Dividends with no price strictly before their ex-date (predate price history) are skipped
+    (not fabricated with a later price). Returns chronological list of (ex_date, yield)."""
     out = []
     hist = divs_t[divs_t["ex_dividend_date"] < entry]
     for _, r in hist.iterrows():
-        _, px = C.price_near(prices_t, r["ex_dividend_date"])
+        _, px = C.price_before_strict(prices_t, r["ex_dividend_date"])
         if px and px > 0:
             out.append((r["ex_dividend_date"], float(r["dps_amount"]) / px))
     return out  # list of (ex_date, yield)
@@ -92,37 +88,70 @@ def m_avg_total_return(divs_t, prices_t, entry):
     return max(float(np.mean(trs)), 0.0) if trs else 0.0
 
 
-def m_growth_trend(divs_t, prices_t, entry, fallback):
-    """Linear trend of annual yield -> project to entry year; fallback (latest yield) if <2 yrs."""
-    hist = divs_t[divs_t["ex_dividend_date"] < entry].copy()
-    if hist.empty:
-        return 0.0
-    hist["year"] = hist["ex_dividend_date"].dt.year
-    yrs, yls = [], []
-    for yr, g in hist.groupby("year"):
-        _, p0 = C.price_near(prices_t, date(int(yr), 1, 1))
-        if p0 and p0 > 0:
-            yrs.append(int(yr))
-            yls.append(float(g["dps_amount"].sum()) / p0)
-    if len(yrs) < 2:
+def m_growth_trend(yh, entry, fallback):
+    """Linear trend of the per-dividend yield series over time -> project to the entry date.
+    Fits on yield_history directly (same strictly-before-ex prices as the other methods), so it
+    inherits the pre-history skip and has no partial-calendar-year bias. Fallback if <2 points."""
+    if len(yh) < 2:
         return max(fallback, 0.0)
-    yrs = np.array(yrs, float); yls = np.array(yls, float)
-    m, b = np.polyfit(yrs - yrs[0], yls, 1)
-    return max(float(m * (entry.year - yrs[0]) + b), 0.0)
+    xs = np.array([pd.Timestamp(d).toordinal() for d, _ in yh], float)
+    ys = np.array([y for _, y in yh], float)
+    m, b = np.polyfit(xs - xs[0], ys, 1)
+    proj = m * (pd.Timestamp(entry).toordinal() - xs[0]) + b
+    return max(float(proj), 0.0)
 
 
 # ---------- realized per checkpoint ----------
 def realized(divs_t, prices_t, entry, months, p_entry, last_day):
-    if entry + relativedelta(months=months) > last_day:
-        return None  # pending
     end = entry + relativedelta(months=months)
-    dsum = divs_t[(divs_t["ex_dividend_date"] >= entry) &
+    if end > last_day:
+        return None  # pending (window not fully elapsed)
+    # ex-date strictly AFTER entry: buying at the entry-day close does not earn a dividend
+    # whose ex-date is that same day (bought ex); include ex-dates up to and including the checkpoint.
+    dsum = divs_t[(divs_t["ex_dividend_date"] > entry) &
                   (divs_t["ex_dividend_date"] <= end)]["dps_amount"].sum()
     _, p_end, _ = C.holding_end_price(prices_t, entry, months)
     if not p_end:
         return None
     return {"realized_div_return": float(dsum) / p_entry,
             "capital_gain": (p_end - p_entry) / p_entry, "p_end": p_end}
+
+
+# ---------- shared: enabled set + water-fill + per-checkpoint aggregation ----------
+# (imported by dashboard.py so the batch and the live dashboard cannot drift)
+def enabled_smap(sub_indexed, universe, core_set):
+    """From a ticker-indexed score frame (one entry×method×trim), return (enabled, score map).
+    Enabled = trades at entry (price_entry not NaN) AND (is core OR has dividend history)."""
+    enabled, smap = [], {}
+    for t in universe:
+        if t not in sub_indexed.index:
+            continue
+        if pd.isna(sub_indexed.loc[t, "price_entry"]):
+            continue
+        if (t not in core_set) and (not bool(sub_indexed.loc[t, "has_history"])):
+            continue
+        enabled.append(t)
+        smap[t] = float(sub_indexed.loc[t, "raw_score"])
+    return enabled, smap
+
+
+def build_portfolio(smap, enabled, core_set, entry_id, real_lookup, checkpoints=CHECKPOINTS):
+    """Water-fill weights, then realized results per checkpoint. real_lookup maps
+    (entry_id, ticker, checkpoint) -> record with .pending/.realized_div_return/.capital_gain.
+    Returns (weights dict, list of per-checkpoint result dicts)."""
+    w = water_fill(smap, enabled, core_set)
+    results = []
+    for h in checkpoints:
+        recs = {t: real_lookup.get((entry_id, t, h)) for t in w}
+        if any(r is None or r.pending for r in recs.values()):
+            results.append({"checkpoint": h, "realized_div_return": np.nan, "capital_gain": np.nan,
+                            "total_return": np.nan, "status": "pending"})
+        else:
+            rdr = sum(wt * recs[t].realized_div_return for t, wt in w.items())
+            cap = sum(wt * recs[t].capital_gain for t, wt in w.items())
+            results.append({"checkpoint": h, "realized_div_return": rdr, "capital_gain": cap,
+                            "total_return": rdr + cap, "status": "realized"})
+    return w, results
 
 
 def main():
@@ -145,7 +174,7 @@ def main():
             sc = {
                 "latest_yield": latest,
                 "avg_total_return": m_avg_total_return(dt, pt, pd.Timestamp(edate)) if p_entry else 0.0,
-                "growth_trend": m_growth_trend(dt, pt, pd.Timestamp(edate), latest) if p_entry else 0.0,
+                "growth_trend": m_growth_trend(yh, pd.Timestamp(edate), latest) if p_entry else 0.0,
             }
             for trim in (True, False):
                 sc_avg = m_avg_yield(yh, trim)
@@ -168,32 +197,24 @@ def main():
     realdf = pd.DataFrame(real_rows); realdf.to_csv(os.path.join(C.DATA, "v3_realized.csv"), index=False)
     print(f"WROTE v3_scores ({len(scores)}), v3_realized ({len(realdf)})")
 
-    # -------- default reference backtest: all 10 enabled, trim=True --------
+    # -------- default reference backtest: all 10 enabled, trim=True (uses shared helpers) --------
     core_set = set(C.CORE)
     wrows, rrows = [], []
     real_key = {(r.entry_id, r.ticker, r.checkpoint): r for r in realdf.itertuples()}
     for eid in ep.entry_id:
         for method in METHODS:
-            sub = scores[(scores.entry_id == eid) & (scores.method == method) & (scores.trim == True)]
-            enabled = [t for t in C.ALL_TICKERS
-                       if (t in core_set) or bool(sub[sub.ticker == t]["has_history"].iloc[0])]
-            enabled = [t for t in enabled if pd.notna(sub[sub.ticker == t]["price_entry"].iloc[0])]
-            smap = {t: float(sub[sub.ticker == t]["raw_score"].iloc[0]) for t in enabled}
-            w = water_fill(smap, enabled, core_set)
+            subi = scores[(scores.entry_id == eid) & (scores.method == method) &
+                          (scores.trim == True)].set_index("ticker")
+            enabled, smap = enabled_smap(subi, C.ALL_TICKERS, core_set)
+            w, results = build_portfolio(smap, enabled, core_set, eid, real_key)
             for t, wt in w.items():
                 wrows.append({"entry_id": eid, "method": method, "ticker": t, "weight": round(wt, 6)})
-            for h in CHECKPOINTS:
-                recs = {t: real_key.get((eid, t, h)) for t in w}
-                if any(r is None or r.pending for r in recs.values()):
-                    rrows.append({"entry_id": eid, "method": method, "checkpoint": h,
-                                  "realized_div_return": np.nan, "capital_gain": np.nan,
-                                  "total_return": np.nan, "status": "pending"})
-                    continue
-                rdr = sum(wt * recs[t].realized_div_return for t, wt in w.items())
-                cap = sum(wt * recs[t].capital_gain for t, wt in w.items())
-                rrows.append({"entry_id": eid, "method": method, "checkpoint": h,
-                              "realized_div_return": round(rdr, 6), "capital_gain": round(cap, 6),
-                              "total_return": round(rdr + cap, 6), "status": "realized"})
+            for r in results:
+                rrows.append({"entry_id": eid, "method": method, "checkpoint": r["checkpoint"],
+                              "realized_div_return": None if r["status"] == "pending" else round(r["realized_div_return"], 6),
+                              "capital_gain": None if r["status"] == "pending" else round(r["capital_gain"], 6),
+                              "total_return": None if r["status"] == "pending" else round(r["total_return"], 6),
+                              "status": r["status"]})
     pd.DataFrame(wrows).to_csv(os.path.join(C.DATA, "v3_weights.csv"), index=False)
     pd.DataFrame(rrows).to_csv(os.path.join(C.DATA, "v3_results.csv"), index=False)
     print(f"WROTE v3_weights ({len(wrows)}), v3_results ({len(rrows)})")
