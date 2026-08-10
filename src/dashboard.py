@@ -1,5 +1,5 @@
 """
-Dashboard v3 — capped proportional weighting (replaces the v1/v2 LP dashboards).
+Dashboard — capped proportional weighting.
 Toggle secondary stocks (off = excluded from the formula entirely) + toggle trim_outliers;
 weights are recomputed live via water-filling. One portfolio per (entry, method), measured at
 4 checkpoints (3/6/9/12m). Capital 100M baht.
@@ -30,7 +30,7 @@ NAMES = {"AOT": "ท่าอากาศยานไทย", "OR": "ปตท.�
          "PTTEP": "ปตท.สผ.", "SCB": "SCBX", "BBL": "กรุงเทพ", "KBANK": "กสิกรไทย",
          "TTB": "ทหารไทยธนชาต", "BAY": "กรุงศรีฯ"}
 
-st.set_page_config(page_title="Thai Dividend Backtest", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="Thai Dividend Backtest", layout="wide")
 
 
 def eorder(s):
@@ -39,8 +39,8 @@ def eorder(s):
 
 @st.cache_resource   # cache_resource: no pickling (rl_key holds itertuples namedtuples)
 def load():
-    sc = pd.read_csv(os.path.join(DATA, "v3_scores.csv"))
-    rl = pd.read_csv(os.path.join(DATA, "v3_realized.csv"))
+    sc = pd.read_csv(os.path.join(DATA, "scores.csv"))
+    rl = pd.read_csv(os.path.join(DATA, "realized.csv"))
     div = pd.read_csv(os.path.join(DATA, "dividend_history.csv"), parse_dates=["ex_dividend_date"])
     price = pd.read_csv(os.path.join(DATA, "price_history.csv"), parse_dates=["date"])
     sc_key = {k: g.set_index("ticker") for k, g in sc.groupby(["entry_id", "method", "trim"])}
@@ -53,7 +53,7 @@ SC, RL, DIV, PRICE, SC_KEY, RL_KEY, ENTRIES = load()
 
 
 @st.cache_data(show_spinner="คำนวณ water-filling ใหม่ตาม universe/trim ที่เลือก...")
-def run_v3(selected_secondaries, trim, _sc_key, _rl_key):
+def run_backtest(selected_secondaries, trim, _sc_key, _rl_key):
     universe = CORE + list(selected_secondaries)
     wrows, rrows = [], []
     for eid in ENTRIES:
@@ -81,13 +81,13 @@ st.sidebar.markdown("### หุ้นหลัก (บังคับถือ 5
 st.sidebar.write("· " + " · ".join(CORE))
 st.sidebar.markdown("### หุ้นรอง (ห้ามถือเกิน 30%)")
 sel_sec = [s for s in SECONDARY if st.sidebar.checkbox(f"{s} — {NAMES[s]}", value=(s == "SCB"), key=f"s_{s}")]
-cbtn = st.sidebar.columns(2)
-if cbtn[0].button("เลือกทั้งหมด", use_container_width=True):
-    for s in SECONDARY: st.session_state[f"s_{s}"] = True
-    st.rerun()
-if cbtn[1].button("ล้างหุ้นรอง", use_container_width=True):
-    for s in SECONDARY: st.session_state[f"s_{s}"] = False
-    st.rerun()
+# cbtn = st.sidebar.columns(2)
+# if cbtn[0].button("เลือกทั้งหมด", use_container_width=True):
+#     for s in SECONDARY: st.session_state[f"s_{s}"] = True
+#     st.rerun()
+# if cbtn[1].button("ล้างหุ้นรอง", use_container_width=True):
+#     for s in SECONDARY: st.session_state[f"s_{s}"] = False
+#     st.rerun()
 st.sidebar.markdown("---")
 trim = st.sidebar.toggle("Trim outliers (ตัด yield > p95)", value=True,
                          help="มีผลกับวิธี 'Yield เฉลี่ย' เท่านั้น — ตัดค่า yield สูงผิดปกติออกด้านบน")
@@ -97,7 +97,7 @@ methods_sel = st.sidebar.multiselect("วิธีถ่วงน้ำหนั
 show_pending = st.sidebar.checkbox("รวม checkpoint ที่ pending", value=False)
 
 universe = CORE + sel_sec
-W, R = run_v3(tuple(sel_sec), trim, SC_KEY, RL_KEY)
+W, R = run_backtest(tuple(sel_sec), trim, SC_KEY, RL_KEY)
 Wf = W[W.method.isin(methods_sel)]
 Rf = R[R.method.isin(methods_sel)]
 Rr = Rf[Rf.status == "realized"]
@@ -216,7 +216,7 @@ with tabs[3]:
     st.dataframe(Rview.sort_values(["entry_id", "method", "checkpoint"]),
                  use_container_width=True, hide_index=True, height=300)
     st.download_button("⬇️ ดาวน์โหลดผล (universe/trim นี้)", Rview.to_csv(index=False).encode("utf-8"),
-                       f"v3_results_{'_'.join(sel_sec) or 'core'}_{'trim' if trim else 'notrim'}.csv", "text/csv")
+                       f"results_{'_'.join(sel_sec) or 'core'}_{'trim' if trim else 'notrim'}.csv", "text/csv")
 
 # ===== Tab 5: dividends =====
 with tabs[4]:
@@ -233,7 +233,7 @@ with tabs[4]:
 # ===== Tab 6: raw =====
 with tabs[5]:
     which = st.selectbox("ตาราง", ["weights (universe/trim นี้)", "results (universe/trim นี้)",
-                                    "v3_scores (ดิบ)", "v3_realized (ดิบ)"])
+                                    "scores (ดิบ)", "realized (ดิบ)"])
     dmap = {"weights (universe/trim นี้)": W, "results (universe/trim นี้)": R,
-            "v3_scores (ดิบ)": SC, "v3_realized (ดิบ)": RL}
+            "scores (ดิบ)": SC, "realized (ดิบ)": RL}
     st.dataframe(dmap[which], use_container_width=True, hide_index=True, height=460)

@@ -4,7 +4,7 @@ Loads validated Phase-1 CSVs and provides walk-forward-safe lookups.
 
 Price basis: price_history.close_price = split-adjusted (current share basis), NOT
 dividend-adjusted. dividends dps_amount = same current-share basis. -> yields & gains
-are computed on a single consistent basis. All splits pre-date the 2021Q4 window anyway.
+are computed on a single consistent basis. All splits pre-date the backtest window (2021+) anyway.
 """
 import os
 import pandas as pd
@@ -19,7 +19,7 @@ os.makedirs(OUT, exist_ok=True)
 CORE = ["AOT", "OR", "KTB", "PTT", "PTTEP"]
 SECONDARY = ["SCB", "BBL", "KBANK", "TTB", "BAY"]
 ALL_TICKERS = CORE + SECONDARY
-CAPITAL = 100_000_000                        # v2: เงินทุนตั้งต้น 100 ล้านบาท
+CAPITAL = 100_000_000                        # เงินทุนตั้งต้น 100 ล้านบาท
 CORE_MIN_WEIGHT = 0.05                       # หุ้นหลักบังคับ >= 5%
 TODAY = pd.Timestamp("2026-08-07")           # session date; anything after = not yet realized
 HOLDING_PERIODS = [3, 6, 9, 12]
@@ -83,7 +83,7 @@ def month_starts(n=60, last_ym=(2026, 8)):
 
 
 def build_entry_points_monthly(prices, n=60, last_ym=(2026, 8)):
-    """v2: monthly entries. First actual trading day >= each month start."""
+    """Monthly entries. First actual trading day >= each month start."""
     trading_days = pd.Index(sorted(prices["date"].unique()))
     rows = []
     for eid, ms in month_starts(n, last_ym):

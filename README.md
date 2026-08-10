@@ -1,4 +1,4 @@
-# Thai Dividend Yield Portfolio — Walk-Forward Backtest (v4)
+# Thai Dividend Yield Portfolio — Walk-Forward Backtest
 
 ระบบ backtest หาพอร์ตหุ้นปันผลไทย ด้วย **capped proportional weighting** — 4 วิธีให้คะแนนหุ้นบน yield
 แล้วแปลงเป็นน้ำหนักพอร์ตแบบสัดส่วน + floor/ceiling (ไม่มี LP) แต่ละวิธีถือ **1 พอร์ต ซื้อครั้งเดียว
@@ -12,7 +12,7 @@
 | หลัก (บังคับถือ) | AOT, OR, KTB, PTT, PTTEP | 5% | 30% |
 | รอง (เลือกได้) | SCB, BBL, KBANK, TTB, BAY | 0% | 30% |
 
-## Yield basis (v4)
+## Yield basis
 
 ทุกวิธีทำงานบน **yield_history**: ปันผลแต่ละครั้ง `yield = dps / ราคาปิด "ก่อน" วัน ex-date แบบเข้ม
 (date < ex-date)` — เพราะราคาปิดวัน ex-date ปรับลง (ex-drop) ไปแล้ว ต้องใช้ราคาก่อนหน้า.
@@ -39,7 +39,7 @@ checkpoint ที่เลยวันปัจจุบัน (2026-08-07) = `p
 pip install -r requirements.txt
 
 python3 src/fetch_data.py        # Phase 1-2: ดึง + validate ข้อมูล 10 หุ้น
-python3 src/engine.py            # score + water-fill + realized -> data/v3_*.csv
+python3 src/engine.py            # score + water-fill + realized -> data/{scores,realized,weights,results}.csv
 streamlit run src/dashboard.py   # dashboard interactive (port 8501)
 ```
 
@@ -54,12 +54,12 @@ streamlit run src/dashboard.py   # dashboard interactive (port 8501)
 
 ```
 src/  common.py · weighting.py · engine.py · dashboard.py · fetch_data.py
-data/ inputs (price_history, dividend_history, ...) + engine outputs (v3_scores/realized/weights/results)
+data/ inputs (price_history, dividend_history, ...) + engine outputs (scores/realized/weights/results)
 raw/  API payloads ดิบ (provenance)
 ```
 
-- `engine.py` เขียนตารางระดับหุ้น (`v3_scores`, `v3_realized`) ที่ไม่ขึ้นกับ universe + ผล default
-  (`v3_weights`, `v3_results`; ชื่อไฟล์ยังขึ้นต้น `v3_` ตามเดิม) — dashboard อ่านตารางระดับหุ้นแล้ว
+- `engine.py` เขียนตารางระดับหุ้น (`scores`, `realized`) ที่ไม่ขึ้นกับ universe + ผล default
+  (`weights`, `results`) — dashboard อ่านตารางระดับหุ้นแล้ว
   **คำนวณ water-filling สด** ตาม universe/trim ที่เลือก ผ่านฟังก์ชันร่วม `enabled_smap` + `build_portfolio`
   (batch กับ dashboard ใช้โค้ดเดียวกัน ไม่ drift)
 

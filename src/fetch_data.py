@@ -1,5 +1,5 @@
 """
-Phase 1 — Data Collection  (v2: yfinance primary, StockAnalysis cross-validation)
+Phase 1 — Data Collection (yfinance primary, StockAnalysis cross-validation)
 
 Why yfinance is primary:
   * Yahoo raw HTTP returns 429, but the yfinance client (own cookie/crumb handling) works.
@@ -20,7 +20,7 @@ Outputs (schema per plan section 4):
   data/source_crosscheck.csv (yfinance vs StockAnalysis recent-dividend agreement)
 
 No fabrication / interpolation. Missing stays missing.
-StockAnalysis raw JSONs from v1 (raw/div_*.json) are retained as the cross-validation source.
+StockAnalysis raw JSONs (raw/div_*.json) are retained as the cross-validation source.
 """
 import os, json, csv
 import pandas as pd
@@ -48,7 +48,7 @@ STOCKS = [
 ]
 
 def load_sa_dividends(ticker):
-    """Load StockAnalysis fmp dividends saved in v1 (raw/div_{ticker}.json) for cross-check."""
+    """Load StockAnalysis fmp dividends saved earlier (raw/div_{ticker}.json) for cross-check."""
     p = os.path.join(RAW, f"div_{ticker}.json")
     if not os.path.exists(p):
         return {}

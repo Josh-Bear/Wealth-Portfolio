@@ -1,8 +1,8 @@
 """
-v3 weighting: proportional-to-score with floor/ceiling via iterative water-filling.
+Weighting: proportional-to-score with floor/ceiling via iterative water-filling.
 Shared by the batch engine (engine.py) and the dashboard (dashboard.py).
 
-Rules (plan v3):
+Rules:
   - core stocks: floor 5%, ceiling 30%   (mandatory holdings)
   - secondary  : floor 0%, ceiling 30%
   - surplus above floors is distributed proportionally to raw_score, capped at each ceiling

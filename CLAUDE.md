@@ -9,10 +9,10 @@ stock a yield-based score; scores become portfolio weights via **capped proporti
 (no LP). Each method produces one portfolio per entry point, **bought once and measured at 4
 checkpoints** (3/6/9/12 months). Capital 100M THB.
 
-> This is the **v4** design (`thai_dividend_backtest_plan_v4.md`, a diff on top of v3). v4 changed:
-> quarterly→**monthly** entries, yield priced **strictly before** each ex-date, and a dashboard that
-> focuses on a **single selected entry** (no cross-entry KPI averages, no average-weight chart).
-> The earlier LP corner-solution approach (v1/v2) was removed.
+> Design notes live in `thai_dividend_backtest_plan_v4.md`. Key choices: **monthly** entries, yield
+> priced **strictly before** each ex-date, and a dashboard focused on a **single selected entry**
+> (no cross-entry KPI averages, no average-weight chart). An earlier LP corner-solution approach was
+> replaced by the capped proportional weighting described here.
 
 ## Universe
 
@@ -24,7 +24,7 @@ checkpoints** (3/6/9/12 months). Capital 100M THB.
 `Σ w_i = 1`. Real baht per stock = `w_i × 100,000,000`. In the dashboard a secondary stock that is
 toggled **off is excluded from the formula entirely** (not scored as 0).
 
-## Yield basis (v4 — important)
+## Yield basis (important)
 
 Every method works on a **yield_history**: for each past dividend,
 `yield = dps_amount / close STRICTLY BEFORE its ex-date` (`common.price_before_strict`, date `<`
@@ -75,13 +75,13 @@ is after `TODAY` (2026-08-07) is `pending`; the dashboard shows `*` for it.
 
 ```bash
 python3 src/fetch_data.py    # Phase 1-2: fetch + validate 10 stocks -> data/*.csv, raw/*
-python3 src/engine.py        # score (4 methods) + water-fill + realized -> data/v3_*.csv
+python3 src/engine.py        # score (4 methods) + water-fill + realized -> data/{scores,realized,weights,results}.csv
 streamlit run src/dashboard.py   # interactive dashboard (port 8501)
 ```
 
-`engine.py` writes per-stock, universe-independent tables (`v3_scores.csv`, `v3_realized.csv`) plus a
-default full-universe reference (`v3_weights.csv`, `v3_results.csv`; filenames keep the legacy `v3_`
-prefix). The dashboard reads the per-stock tables and **recomputes water-filling live** for the
+`engine.py` writes per-stock, universe-independent tables (`scores.csv`, `realized.csv`) plus a
+default full-universe reference (`weights.csv`, `results.csv`). The dashboard reads the per-stock
+tables and **recomputes water-filling live** for the
 selected universe / trim setting via the shared `engine.enabled_smap` + `engine.build_portfolio`
 (so batch and live cannot drift).
 
@@ -98,7 +98,7 @@ selected universe / trim setting via the shared `engine.enabled_smap` + `engine.
   baht view, score transparency).
 - `src/fetch_data.py` — Phase 1-2 data collection (yfinance primary, StockAnalysis cross-check).
 - `data/` — inputs (`price_history`, `dividend_history`, `stock_master`, `data_completeness`,
-  `source_crosscheck`) + engine outputs (`v3_scores`, `v3_realized`, `v3_weights`, `v3_results`).
+  `source_crosscheck`) + engine outputs (`scores`, `realized`, `weights`, `results`).
 - `raw/` — untouched API payloads (provenance/cross-check).
 
 ## Conventions

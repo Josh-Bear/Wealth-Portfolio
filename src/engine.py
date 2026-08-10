@@ -1,18 +1,18 @@
 """
-v3 engine — capped proportional weighting (replaces the v1/v2 LP corner-solution approach).
+Engine — capped proportional weighting (scores -> water-filled weights, no LP).
 
 Paradigm: 4 methods score each stock directly (on YIELD, not DPS), scores -> weights via
 water-filling (weighting.py). One portfolio per (entry, method), bought once, measured at
-4 checkpoints (3/6/9/12m). Quarterly entries, 20 points from 2021Q3 (data complete for all 10).
+4 checkpoints (3/6/9/12m). Monthly entries, 60 points 2021-09 .. 2026-08.
 
 Walk-forward: every score at an entry uses ONLY dividends/prices strictly before that entry.
 
 Outputs (per-stock, universe-independent -> dashboard recomputes weights live):
-  data/v3_scores.csv    entry_id,ticker,method,trim,raw_score,price_entry,has_history
-  data/v3_realized.csv  entry_id,ticker,checkpoint,price_entry,price_end,realized_div_return,capital_gain,pending
+  data/scores.csv    entry_id,ticker,method,trim,raw_score,price_entry,has_history
+  data/realized.csv  entry_id,ticker,checkpoint,price_entry,price_end,realized_div_return,capital_gain,pending
 Reference default-universe result (all 10 on, trim=True):
-  data/v3_weights.csv   entry_id,method,ticker,weight
-  data/v3_results.csv   entry_id,method,checkpoint,realized_div_return,capital_gain,total_return,status
+  data/weights.csv   entry_id,method,ticker,weight
+  data/results.csv   entry_id,method,checkpoint,realized_div_return,capital_gain,total_return,status
 """
 import os
 import numpy as np
@@ -28,12 +28,12 @@ TR_WINDOW_M = 12          # rolling total-return window (shorter if history < th
 TR_MIN_DAYS = 60          # ignore windows shorter than this
 
 
-# ---------- entry points: monthly, 60 points 2021-09 .. 2026-08 (v4) ----------
-def v3_entries(prices):
+# ---------- entry points: monthly, 60 points 2021-09 ..-2026-08 ----------
+def build_entries(prices):
     return C.build_entry_points_monthly(prices, n=60, last_ym=(2026, 8))[["entry_id", "entry_date"]]
 
 
-# ---------- per-dividend yields before entry (v4 yield_history) ----------
+# ---------- per-dividend yields before entry (yield_history) ----------
 def yields_before(divs_t, prices_t, entry):
     """yield of each past dividend = dps / close STRICTLY BEFORE its ex-date.
     Dividends with no price strictly before their ex-date (predate price history) are skipped
@@ -157,9 +157,9 @@ def build_portfolio(smap, enabled, core_set, entry_id, real_lookup, checkpoints=
 def main():
     prices = C.load_prices()
     divs = C.load_dividends()
-    ep = v3_entries(prices)
+    ep = build_entries(prices)
     last_day = prices["date"].max()
-    print("v3 entries:", len(ep), "->", ep.entry_id.iloc[0], "..", ep.entry_id.iloc[-1])
+    print("entries:", len(ep), "->", ep.entry_id.iloc[0], "..", ep.entry_id.iloc[-1])
 
     score_rows, real_rows = [], []
     for _, e in ep.iterrows():
@@ -193,9 +193,9 @@ def main():
                                   "capital_gain": rec["capital_gain"] if rec else np.nan,
                                   "pending": rec is None})
 
-    scores = pd.DataFrame(score_rows); scores.to_csv(os.path.join(C.DATA, "v3_scores.csv"), index=False)
-    realdf = pd.DataFrame(real_rows); realdf.to_csv(os.path.join(C.DATA, "v3_realized.csv"), index=False)
-    print(f"WROTE v3_scores ({len(scores)}), v3_realized ({len(realdf)})")
+    scores = pd.DataFrame(score_rows); scores.to_csv(os.path.join(C.DATA, "scores.csv"), index=False)
+    realdf = pd.DataFrame(real_rows); realdf.to_csv(os.path.join(C.DATA, "realized.csv"), index=False)
+    print(f"WROTE scores ({len(scores)}), realized ({len(realdf)})")
 
     # -------- default reference backtest: all 10 enabled, trim=True (uses shared helpers) --------
     core_set = set(C.CORE)
@@ -215,9 +215,9 @@ def main():
                               "capital_gain": None if r["status"] == "pending" else round(r["capital_gain"], 6),
                               "total_return": None if r["status"] == "pending" else round(r["total_return"], 6),
                               "status": r["status"]})
-    pd.DataFrame(wrows).to_csv(os.path.join(C.DATA, "v3_weights.csv"), index=False)
-    pd.DataFrame(rrows).to_csv(os.path.join(C.DATA, "v3_results.csv"), index=False)
-    print(f"WROTE v3_weights ({len(wrows)}), v3_results ({len(rrows)})")
+    pd.DataFrame(wrows).to_csv(os.path.join(C.DATA, "weights.csv"), index=False)
+    pd.DataFrame(rrows).to_csv(os.path.join(C.DATA, "results.csv"), index=False)
+    print(f"WROTE weights ({len(wrows)}), results ({len(rrows)})")
 
 
 if __name__ == "__main__":
