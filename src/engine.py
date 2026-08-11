@@ -19,10 +19,10 @@ import numpy as np
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 import common as C
-from weighting import water_fill
+from weighting import water_fill, round_to_half_pct
 
 CHECKPOINTS = [3, 6, 9, 12]
-METHODS = ["avg_yield", "latest_yield", "avg_total_return", "growth_trend"]
+METHODS = ["avg_yield", "latest_yield", "avg_total_return", "growth_trend", "ttm_yield_sum"]
 TRIM_PCTL = 95
 TR_WINDOW_M = 12          # rolling total-return window (shorter if history < this)
 TR_MIN_DAYS = 60          # ignore windows shorter than this
@@ -101,6 +101,14 @@ def m_growth_trend(yh, entry, fallback):
     return max(float(proj), 0.0)
 
 
+def m_ttm_yield_sum(yh, entry):
+    """Sum of per-dividend yields whose ex-date falls within the trailing 12 months before entry.
+    yh already holds only ex-dates strictly < entry (from yields_before), so this just filters the
+    lower bound. No dividend in the window -> 0.0 (no fallback: an off-cycle entry scores 0)."""
+    cutoff = entry - relativedelta(months=12)
+    return float(sum(y for d, y in yh if d >= cutoff))
+
+
 # ---------- realized per checkpoint ----------
 def realized(divs_t, prices_t, entry, months, p_entry, last_day):
     end = entry + relativedelta(months=months)
@@ -136,10 +144,14 @@ def enabled_smap(sub_indexed, universe, core_set):
 
 
 def build_portfolio(smap, enabled, core_set, entry_id, real_lookup, checkpoints=CHECKPOINTS):
-    """Water-fill weights, then realized results per checkpoint. real_lookup maps
-    (entry_id, ticker, checkpoint) -> record with .pending/.realized_div_return/.capital_gain.
-    Returns (weights dict, list of per-checkpoint result dicts)."""
-    w = water_fill(smap, enabled, core_set)
+    """Water-fill weights, round onto the 0.5pp grid (x.0%/x.5%, sum stays exactly 100%,
+    floor/ceiling preserved -- see weighting.round_to_half_pct), then realized results per
+    checkpoint. real_lookup maps (entry_id, ticker, checkpoint) -> record with
+    .pending/.realized_div_return/.capital_gain. Returns (weights dict, list of per-checkpoint
+    result dicts). Realized figures below are computed off the ROUNDED weights, i.e. they
+    reflect the portfolio you'd actually buy in clean 0.5%-of-capital increments."""
+    w_raw = water_fill(smap, enabled, core_set)
+    w = round_to_half_pct(w_raw, core_set)
     results = []
     for h in checkpoints:
         recs = {t: real_lookup.get((entry_id, t, h)) for t in w}
@@ -175,6 +187,7 @@ def main():
                 "latest_yield": latest,
                 "avg_total_return": m_avg_total_return(dt, pt, pd.Timestamp(edate)) if p_entry else 0.0,
                 "growth_trend": m_growth_trend(yh, pd.Timestamp(edate), latest) if p_entry else 0.0,
+                "ttm_yield_sum": m_ttm_yield_sum(yh, pd.Timestamp(edate)) if p_entry else 0.0,
             }
             for trim in (True, False):
                 sc_avg = m_avg_yield(yh, trim)

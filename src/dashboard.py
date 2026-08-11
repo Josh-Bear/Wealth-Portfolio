@@ -20,11 +20,13 @@ DATA = os.path.join(os.path.dirname(HERE), "data")
 CORE = ["AOT", "OR", "KTB", "PTT", "PTTEP"]
 SECONDARY = ["SCB", "BBL", "KBANK", "TTB", "BAY"]
 CORE_SET = set(CORE)
-METHODS = ["avg_yield", "latest_yield", "avg_total_return", "growth_trend"]
+METHODS = ["avg_yield", "latest_yield", "avg_total_return", "growth_trend", "ttm_yield_sum"]
 MLABEL = {"avg_yield": "Yield เฉลี่ย", "latest_yield": "Yield ล่าสุด",
-          "avg_total_return": "Total return เฉลี่ย", "growth_trend": "Growth trend"}
+          "avg_total_return": "Total return เฉลี่ย", "growth_trend": "Growth trend",
+          "ttm_yield_sum": "Yield 12 เดือนล่าสุด (sum)"}
 MCOLORS = {"avg_yield": "#4C72B0", "latest_yield": "#DD8452",
-           "avg_total_return": "#55A868", "growth_trend": "#C44E52"}
+           "avg_total_return": "#55A868", "growth_trend": "#C44E52",
+           "ttm_yield_sum": "#8172B2"}
 CHECKPOINTS = [3, 6, 9, 12]
 NAMES = {"AOT": "ท่าอากาศยานไทย", "OR": "ปตท.น้ำมันฯ(OR)", "KTB": "กรุงไทย", "PTT": "ปตท.",
          "PTTEP": "ปตท.สผ.", "SCB": "SCBX", "BBL": "กรุงเทพ", "KBANK": "กสิกรไทย",
@@ -50,6 +52,7 @@ def load():
 
 
 SC, RL, DIV, PRICE, SC_KEY, RL_KEY, ENTRIES = load()
+ENTRIES_DESC = list(reversed(ENTRIES))   # newest-first for the entry pickers (open near recent months)
 
 
 @st.cache_data(show_spinner="คำนวณ water-filling ใหม่ตาม universe/trim ที่เลือก...")
@@ -116,7 +119,7 @@ with tabs[0]:
     st.subheader("น้ำหนักพอร์ต")
 
     c = st.columns(2)
-    sel_e = c[0].selectbox("Entry point", ENTRIES, index=len(ENTRIES)-1)
+    sel_e = c[0].selectbox("Entry point", ENTRIES_DESC, index=0)
     sel_m = c[1].selectbox("วิธี", METHODS, format_func=lambda m: MLABEL[m])
     ws = W[(W.entry_id == sel_e) & (W.method == sel_m)].copy()
     ws["กลุ่ม"] = ws.ticker.map(lambda t: "หลัก" if t in CORE_SET else "รอง")
@@ -182,7 +185,7 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("Raw score ต่อหุ้น × วิธี")
     st.caption("score = ค่าที่ใช้ถ่วงน้ำหนักตามสัดส่วน (บน yield). trim outliers มีผลเฉพาะ 'Yield เฉลี่ย'")
-    e2 = st.selectbox("Entry point", ENTRIES, index=len(ENTRIES)-1, key="e_scores")
+    e2 = st.selectbox("Entry point", ENTRIES_DESC, index=0, key="e_scores")
     rows = []
     for m in METHODS:
         sub = SC_KEY.get((e2, m, trim))
