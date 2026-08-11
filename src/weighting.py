@@ -79,6 +79,56 @@ def water_fill(scores, enabled, core_set, ceiling=CEILING, eps=1e-12, max_iter=2
     return w
 
 
+def round_to_half_pct(w, core_set, step=0.005, ceiling=CEILING, core_floor=CORE_FLOOR):
+    """Round a water_fill() output onto a 0.5pp grid (weights land on x.0% or x.5%
+    only), preserving sum==1 exactly.
+
+    Approach: round every ticker to its NEAREST grid point first (min individual
+    deviation, <= half a step each). Because both CORE_FLOOR (5%) and CEILING (30%)
+    are exact multiples of `step`, nearest-rounding alone can never breach them
+    (a raw weight already >= floor rounds to a grid point >= floor; already <=
+    ceiling rounds to a grid point <= ceiling). Nearest-rounding of every ticker
+    independently will generally leave the total off from 100% by a few units
+    (itself always a whole number of steps); that residual is then walked onto the
+    tickers whose raw value sat closest to the next grid point in the needed
+    direction (largest-remainder tie-break), touching as few tickers as possible
+    and respecting floor/ceiling at every step.
+
+    w          : dict ticker -> weight (output of water_fill(), sums to 1)
+    core_set   : core tickers (get the 5% floor guard during down-adjustments)
+    returns    : dict ticker -> weight, each a multiple of `step`, sum == 1 exactly
+    """
+    if not w:
+        return {}
+    total_units = round(1.0 / step)                 # e.g. 200 for step=0.005 (0.5%)
+    ceiling_units = round(ceiling / step)            # e.g. 60 for 30%
+    floor_units = {i: (round(core_floor / step) if i in core_set else 0) for i in w}
+    raw_units = {i: v / step for i, v in w.items()}
+    nearest = {i: max(floor_units[i], min(ceiling_units, int(raw_units[i] + 0.5))) for i in w}
+
+    diff = total_units - sum(nearest.values())
+    guard = 0
+    if diff > 0:
+        # need to add `diff` units total -> give them to tickers closest to rounding up
+        order = sorted(w, key=lambda i: -(raw_units[i] - nearest[i]))
+        while diff > 0 and guard < len(order) * 5:
+            i = order[guard % len(order)]
+            if nearest[i] < ceiling_units:
+                nearest[i] += 1
+                diff -= 1
+            guard += 1
+    elif diff < 0:
+        # need to remove `-diff` units total -> take them from tickers closest to rounding down
+        order = sorted(w, key=lambda i: -(nearest[i] - raw_units[i]))
+        while diff < 0 and guard < len(order) * 5:
+            i = order[guard % len(order)]
+            if nearest[i] > floor_units[i]:
+                nearest[i] -= 1
+                diff += 1
+            guard += 1
+    return {i: nearest[i] * step for i in w}
+
+
 # ----------------- self-test -----------------
 if __name__ == "__main__":
     CORE = {"AOT", "OR", "KTB", "PTT", "PTTEP"}
@@ -106,4 +156,36 @@ if __name__ == "__main__":
     ok &= check("core-only", {"AOT": 1, "OR": 2, "KTB": 3, "PTT": 4, "PTTEP": 5}, list(CORE))
     # 5) all zero scores -> core-first equal, sum=1
     ok &= check("all-zero", {t: 0.0 for t in ALL}, ALL)
+
+    # ---- round_to_half_pct checks ----
+    def check_round(name, scores, enabled):
+        w = water_fill(scores, enabled, CORE)
+        r = round_to_half_pct(w, CORE)
+        s = sum(r.values())
+        oksum = abs(s - 1.0) < 1e-9
+        okcap = all(v <= CEILING + 1e-9 for v in r.values())
+        okflr = all(r[i] >= (CORE_FLOOR - 1e-9) for i in enabled if i in CORE)
+        # every value must land on the 0.5pp grid
+        okgrid = all(abs(round(v / 0.005) - v / 0.005) < 1e-6 for v in r.values())
+        maxdev = max((abs(r[i] - w[i]) for i in enabled), default=0.0)
+        okmatch = maxdev <= 0.005 + 1e-9  # no ticker should ever move by more than one full step
+        print(f"[round:{name}] sum={s:.6f} {'OK' if oksum else 'BAD'} | "
+              f"ceiling {'OK' if okcap else 'BAD'} | core-floor {'OK' if okflr else 'BAD'} | "
+              f"grid {'OK' if okgrid else 'BAD'} | max-dev={maxdev*100:.2f}pp {'OK' if okmatch else 'BAD'}")
+        print("   raw:     " + ", ".join(f"{k}={w[k]*100:.4f}%" for k in enabled))
+        print("   rounded: " + ", ".join(f"{k}={r[k]*100:.1f}%" for k in enabled))
+        return oksum and okcap and okflr and okgrid and okmatch
+
+    ok &= check_round("equal", {t: 1.0 for t in ALL}, ALL)
+    ok &= check_round("one-dominant", {**{t: 0.0 for t in ALL}, "PTTEP": 100.0}, ALL)
+    ok &= check_round("two-positive", {**{t: 0.0 for t in ALL}, "PTTEP": 5, "SCB": 5}, ALL)
+    ok &= check_round("core-only", {"AOT": 1, "OR": 2, "KTB": 3, "PTT": 4, "PTTEP": 5}, list(CORE))
+    ok &= check_round("all-zero", {t: 0.0 for t in ALL}, ALL)
+    # messy scores designed to produce lots of .xx75 raw weights -> stresses the remainder logic
+    import random
+    random.seed(7)
+    for trial in range(20):
+        sc = {t: round(random.random() * 10, 4) for t in ALL}
+        ok &= check_round(f"random-{trial}", sc, ALL)
+
     print("\nALL TESTS", "PASS" if ok else "FAIL")
