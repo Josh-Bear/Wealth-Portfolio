@@ -1,0 +1,30 @@
+# ---- Claude / Cowork tool config (not project code) ----
+.claude/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+
+# ---- OS ----
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
+
+# ---- Editor / IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- Streamlit ----
+.streamlit/secrets.toml
+
+# Note: thai-dividend-backtest/ has its own .gitignore for project-specific
+# rules (data/, raw/, output/ handling). This root file only covers what sits
+# directly under the repo root (dividend_maximizer/, .claude/, etc.)
