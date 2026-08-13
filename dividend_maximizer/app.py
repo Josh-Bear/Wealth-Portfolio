@@ -33,6 +33,11 @@ def _prices():
     return C.load_prices()
 
 
+@st.cache_data
+def _divs():
+    return C.load_dividends()
+
+
 def _year_options():
     yrs = sorted(_prices()["date"].dt.year.unique())
     return [int(y) for y in yrs if y >= yrs[0] + 5]   # need a few prior years for a forecast
@@ -40,7 +45,7 @@ def _year_options():
 
 # ---------------- sidebar ----------------
 st.sidebar.title("Dividend Maximizer")
-st.sidebar.caption("เลือกหุ้น ≥5 ตัว (5–30%) ให้ได้ปันผลครึ่งปีสูงสุด · greedy (คนละแบบกับ water-fill เดิม)")
+st.sidebar.caption("เลือกหุ้น ≥5 ตัว (5–30%) ให้ได้ปันผลครึ่งปีสูงสุด")
 
 year_opts = _year_options()
 year = st.sidebar.selectbox("ปี", year_opts, index=len(year_opts) - 1)
@@ -87,15 +92,23 @@ def _fmt_portfolio(port):
 
 
 def _summary_row(r):
-    c = st.columns(4)
-    c[0].metric("ปันผลคาดรวม", f"{r['expected_dividend']:,.0f}", f"{r['expected_dividend']/r['capital']*100:.2f}% ของทุน")
-    c[1].metric("เงินลงทุนจริง", f"{r['invested']:,.0f}")
-    c[2].metric("ค่าคอมรวม", f"{r['commission_total']:,.0f}")
-    c[3].metric("เงินสดคงเหลือ", f"{r['leftover_cash']:,.0f}")
+    port = r["portfolio"]
+    # match the per-stock table: while any holding is pending (half not fully elapsed) the realized
+    # total is incomplete, so show "-" rather than a partial figure dressed up as the final total.
+    any_pending = bool(port["realized_pending"].any())
+    realized_total = float(port["realized_dividend"].sum())
+    realized_txt = "-" if any_pending else f"{realized_total:,.0f}"
+    realized_delta = None if any_pending else f"{realized_total/r['capital']*100:.2f}% ของทุน"
+    c = st.columns(5)
+    c[0].metric("เงินลงทุนจริง", f"{r['invested']:,.0f}")
+    c[1].metric("ค่าคอมรวม", f"{r['commission_total']:,.0f}")
+    c[2].metric("เงินสดคงเหลือ", f"{r['leftover_cash']:,.0f}")
+    c[3].metric("ปันผลคาดรวม", f"{r['expected_dividend']:,.0f}", f"{r['expected_dividend']/r['capital']*100:.2f}% ของทุน")
+    c[4].metric("ปันผลจริง", realized_txt, realized_delta)
 
 
 def _render_single(method):
-    r = O.run(entry, method, capital=capital, commission=commission)
+    r = O.run(entry, method, capital=capital, commission=commission, prices=_prices(), divs=_divs())
     _summary_row(r)
     st.subheader("พอร์ตที่เลือก")
     st.dataframe(_fmt_portfolio(r["portfolio"]), use_container_width=True, hide_index=True)
@@ -114,7 +127,8 @@ def _render_single(method):
 with tab_single:
     if method_choice == "เทียบทั้ง 3 วิธี":
         st.subheader("เทียบ 3 วิธีพยากรณ์")
-        runs = {m: O.run(entry, m, capital=capital, commission=commission) for m in O.METHODS}
+        runs = {m: O.run(entry, m, capital=capital, commission=commission,
+                         prices=_prices(), divs=_divs()) for m in O.METHODS}
         comp = pd.DataFrame([{"วิธี": O.MLABEL[m], "ปันผลคาด": runs[m]["expected_dividend"],
                               "% ของทุน": runs[m]["expected_dividend"] / capital * 100,
                               "เงินสดเหลือ": runs[m]["leftover_cash"]} for m in O.METHODS])
@@ -139,7 +153,8 @@ with tab_backtest:
     bt_method = method_choice if method_choice in O.METHODS else "avg3y"
     st.caption(f"วิธีพยากรณ์: **{O.MLABEL[bt_method]}** · TODAY = {C.TODAY.date()} "
                f"(ปีที่ยังไม่จบครึ่งปี = pending, ไม่ใส่เลขเดา)")
-    bt = O.run_backtest(BACKTEST_YEARS, bt_method, capital=capital, commission=commission)
+    bt = O.run_backtest(BACKTEST_YEARS, bt_method, capital=capital, commission=commission,
+                        prices=_prices(), divs=_divs())
     show = bt.copy()
     show["ปันผลจริง"] = [f"{v:,.0f} ({p:.2f}%)" if s == "realized" else "⏳ pending"
                         for v, p, s in zip(show["realized_dividend"], show["realized_pct"], show["status"])]

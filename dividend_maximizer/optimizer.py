@@ -51,6 +51,23 @@ def h1_actual(divs_t, year):
     return float(divs_t.loc[m, "dps_amount"].sum())
 
 
+def h2_actual(divs_t, year):
+    """Sum of dps already gone ex in H2 (Jul 1 - Dec 31) of `year` -- the mirror of h1_actual,
+    used when forecasting H1 of the FOLLOWING year (the most recently known half by then)."""
+    m = ((divs_t["ex_dividend_date"] >= pd.Timestamp(year, 7, 1)) &
+         (divs_t["ex_dividend_date"] <= pd.Timestamp(year, 12, 31)))
+    return float(divs_t.loc[m, "dps_amount"].sum())
+
+
+def prev_half_actual(divs_t, target_year, half):
+    """The most recently known half-year total right before `half` of `target_year` begins.
+    H2(Y)  is preceded by H1(Y)   (same year).
+    H1(Y)  is preceded by H2(Y-1) (previous year) -- chronologically the last thing that happened."""
+    if half == "H2":
+        return h1_actual(divs_t, target_year)
+    return h2_actual(divs_t, target_year - 1)
+
+
 def years_available(prices_t, years):
     """Keep only years the stock was already trading before (price history starts on/before Jan 1),
     so a partial first listing year (OR 2021, SCB 2022) is not mistaken for a zero-dividend year."""
@@ -70,35 +87,40 @@ def _prior_annuals(divs_t, prices_t, target_year, n=None):
     return [(y, annual_total(divs_t, y)) for y in yrs]
 
 
-# ---------- step 2: three forecasts of the H2 dividend PER SHARE (baht, walk-forward) ----------
-def forecast_avg3y(divs_t, prices_t, target_year):
-    """mean(annual_total over up to 3 most-recent available years) - H1 already paid, clamp >= 0."""
+# ---------- step 2: three forecasts of the target half's dividend PER SHARE (baht, walk-forward) --
+# `baseline(target_year)` (the avg/lastyear/linreg over full prior calendar years) is computed the
+# SAME way regardless of which half is being forecast. Only the subtracted "already known" half
+# changes: H2(Y) subtracts H1(Y); H1(Y) subtracts H2(Y-1) -- see prev_half_actual().
+def forecast_avg3y(divs_t, prices_t, target_year, half="H2"):
+    """mean(annual_total over up to 3 most-recent available years) - the most recently known
+    half-year actual (see prev_half_actual), clamp >= 0."""
     hist = _prior_annuals(divs_t, prices_t, target_year, n=3)
     if not hist:
         return 0.0
     mean_annual = sum(v for _, v in hist) / len(hist)
-    return max(mean_annual - h1_actual(divs_t, target_year), 0.0)
+    return max(mean_annual - prev_half_actual(divs_t, target_year, half), 0.0)
 
 
-def forecast_lastyear(divs_t, prices_t, target_year):
-    """annual_total of the most recent available prior year - H1 already paid, clamp >= 0."""
+def forecast_lastyear(divs_t, prices_t, target_year, half="H2"):
+    """annual_total of the most recent available prior year - the most recently known half-year
+    actual, clamp >= 0."""
     hist = _prior_annuals(divs_t, prices_t, target_year, n=1)
     if not hist:
         return 0.0
-    return max(hist[-1][1] - h1_actual(divs_t, target_year), 0.0)
+    return max(hist[-1][1] - prev_half_actual(divs_t, target_year, half), 0.0)
 
 
-def forecast_linreg(divs_t, prices_t, target_year):
-    """Linear trend on (year -> annual_total) projected to target_year, - H1 paid, clamp >= 0.
-    Falls back to avg3y when fewer than 2 data points exist."""
+def forecast_linreg(divs_t, prices_t, target_year, half="H2"):
+    """Linear trend on (year -> annual_total) projected to target_year, - the most recently known
+    half-year actual, clamp >= 0. Falls back to avg3y when fewer than 2 data points exist."""
     hist = _prior_annuals(divs_t, prices_t, target_year)
     if len(hist) < 2:
-        return forecast_avg3y(divs_t, prices_t, target_year)
+        return forecast_avg3y(divs_t, prices_t, target_year, half)
     xs = np.array([y for y, _ in hist], float)
     ys = np.array([v for _, v in hist], float)
     m, b = np.polyfit(xs, ys, 1)
     proj = m * target_year + b
-    return max(float(proj) - h1_actual(divs_t, target_year), 0.0)
+    return max(float(proj) - prev_half_actual(divs_t, target_year, half), 0.0)
 
 
 FORECASTS = {"avg3y": forecast_avg3y, "lastyear": forecast_lastyear, "linreg": forecast_linreg}
@@ -164,20 +186,26 @@ def to_shares(weights, prices, capital=None, commission=COMMISSION, lot=LOT_SIZE
 
 
 # ---------- step 5: score the whole universe at one entry (ranking transparency) ----------
-def score_universe(divs, prices, entry, target_year, method, universe=None):
+def score_universe(divs, prices, entry, target_year, method, universe=None, half="H2"):
     """Per-ticker DataFrame at one entry: forecast dps (baht/share), entry price, and the ranking
     score = forecast_dps / price (the yield that the allocator maximizes). Only tickers that trade
     at `entry` are eligible. Sorted by score desc, ticker asc."""
     universe = list(C.ALL_TICKERS if universe is None else universe)
     fc = FORECASTS[method]
+    # group once (single pass) instead of re-scanning the full frames per ticker
+    pg = dict(tuple(prices.groupby("ticker")))
+    dg = dict(tuple(divs.groupby("ticker")))
+    empty_div = divs.iloc[0:0]
     rows = []
     for t in universe:
-        pt = prices[prices["ticker"] == t]
-        dt = divs[divs["ticker"] == t]
+        pt = pg.get(t)
+        if pt is None:                             # ticker never trades -> not eligible
+            continue
+        dt = dg.get(t, empty_div)
         _, px = C.price_at_entry(pt, entry)
         if not px or px <= 0:                      # not trading yet at entry -> not eligible
             continue
-        dps = fc(dt, pt, target_year)
+        dps = fc(dt, pt, target_year, half)
         rows.append({"ticker": t, "forecast_dps": dps, "price": float(px),
                      "score_yield": (dps / px) if px else 0.0})
     df = pd.DataFrame(rows)
@@ -194,7 +222,7 @@ def half_window(year, half="H2"):
     return pd.Timestamp(year, 7, 1), pd.Timestamp(year, 12, 31)
 
 
-def realized_h2_dps(divs_t, entry, year, today=None, half="H2"):
+def realized_half_dps(divs_t, entry, year, today=None, half="H2"):
     """Actual dividend per share for one ticker in the chosen half: ex-date strictly AFTER entry
     (bought-ex, same rule as engine.py) and on/before the half's last day. Split by `today` (C.TODAY):
       ex-date <= today  -> counted in realized_dps
@@ -220,16 +248,29 @@ def half_entry_date(prices, year, half="H2"):
 
 
 # ---------- top-level: one entry ----------
-def run(entry_date, method, universe=None, capital=None, commission=COMMISSION):
-    """Full single-entry pass: score universe -> greedy weights -> real shares -> expected H2
-    dividend. Returns a dict the UI can render directly."""
+def run(entry_date, method, universe=None, capital=None, commission=COMMISSION,
+        prices=None, divs=None):
+    """Full single-entry pass: score universe -> greedy weights -> real shares -> expected dividend
+    for the entry's half (H1 for a Jan-Jun entry, H2 for Jul-Dec). Returns a dict the UI renders.
+    Pass preloaded `prices`/`divs` frames to avoid re-reading the CSVs on every call."""
     capital = C.CAPITAL if capital is None else capital
-    prices = C.load_prices()
-    divs = C.load_dividends()
+    prices = C.load_prices() if prices is None else prices
+    divs = C.load_dividends() if divs is None else divs
     entry = pd.Timestamp(entry_date)
     target_year = entry.year
     half = "H2" if entry.month >= 7 else "H1"
-    ranking = score_universe(divs, prices, entry, target_year, method, universe)
+    ranking = score_universe(divs, prices, entry, target_year, method, universe, half)
+    if ranking.empty:                              # no ticker trades at this entry -> empty portfolio
+        empty = pd.DataFrame(columns=["ticker", "target_weight", "price", "shares", "invest_value",
+                                      "commission_paid", "total_cost", "actual_weight_pct",
+                                      "forecast_dps", "expected_dividend", "realized_dividend",
+                                      "realized_pending"])
+        return {
+            "entry_date": entry, "target_year": target_year, "method": method, "half": half,
+            "ranking": ranking, "weights": {}, "portfolio": empty,
+            "expected_dividend": 0.0, "commission_total": 0.0, "invested": 0.0,
+            "leftover_cash": capital, "capital": capital,
+        }
     scores = dict(zip(ranking["ticker"], ranking["score_yield"]))
     weights = greedy_allocate(scores)
     price_map = dict(zip(ranking["ticker"], ranking["price"]))
@@ -238,7 +279,7 @@ def run(entry_date, method, universe=None, capital=None, commission=COMMISSION):
     shares["forecast_dps"] = shares["ticker"].map(dps_map)
     shares["expected_dividend"] = shares["shares"] * shares["forecast_dps"]
     # actual dividend that has already gone ex in this half (per stock); pending until the half elapses
-    rz = [realized_h2_dps(divs[divs["ticker"] == t], entry, target_year, C.TODAY, half)
+    rz = [realized_half_dps(divs[divs["ticker"] == t], entry, target_year, C.TODAY, half)
           for t in shares["ticker"]]
     shares["realized_dividend"] = [s * info["realized_dps"] for s, info in zip(shares["shares"], rz)]
     shares["realized_pending"] = [info["pending"] for info in rz]
@@ -254,19 +295,20 @@ def run(entry_date, method, universe=None, capital=None, commission=COMMISSION):
 
 
 # ---------- top-level: multi-year backtest ----------
-def run_backtest(years, method, half="H2", universe=None, capital=None, commission=COMMISSION):
+def run_backtest(years, method, half="H2", universe=None, capital=None, commission=COMMISSION,
+                 prices=None, divs=None):
     """Decide the portfolio at each year's H2 entry (walk-forward) and measure the dividend that
     actually landed. Fully-elapsed years show realized baht; the in-progress year shows what has
-    paid so far and flags the rest pending. One row per year."""
+    paid so far and flags the rest pending. One row per year. Frames are loaded once and reused."""
     capital = C.CAPITAL if capital is None else capital
-    prices = C.load_prices()
-    divs = C.load_dividends()
+    prices = C.load_prices() if prices is None else prices
+    divs = C.load_dividends() if divs is None else divs
     out = []
     for y in years:
         entry = half_entry_date(prices, y, half)
         if entry is None:
             continue
-        r = run(entry, method, universe, capital, commission)
+        r = run(entry, method, universe, capital, commission, prices, divs)
         port = r["portfolio"]
         realized_baht, any_pending, chosen = 0.0, False, []
         for _, row in port.iterrows():
@@ -274,7 +316,7 @@ def run_backtest(years, method, half="H2", universe=None, capital=None, commissi
                 continue
             chosen.append(row["ticker"])
             dt = divs[divs["ticker"] == row["ticker"]]
-            rz = realized_h2_dps(dt, entry, y, C.TODAY, half)
+            rz = realized_half_dps(dt, entry, y, C.TODAY, half)
             realized_baht += row["shares"] * rz["realized_dps"]
             any_pending = any_pending or rz["pending"]
         out.append({
@@ -304,6 +346,26 @@ if __name__ == "__main__":
         good = abs(got - exp) < 1e-4
         ok &= good
         print(f"   {t:5s} got={got:.4f} expect={exp:.4f} {'OK' if good else 'BAD'}")
+
+    # ---- 1b) H1 forecast fix: baseline(Y) - h2_actual(Y-1), NOT baseline(Y) - 0 ----
+    print("== forecast avg3y, target 2026 half=H1 (expect PTT=1.00, PTTEP=5.308, TTB=0.052) ==")
+    expect_h1 = {"PTT": 1.00, "PTTEP": 5.308, "TTB": 0.052}
+    for t, exp in expect_h1.items():
+        pt = prices[prices["ticker"] == t]
+        dt = divs[divs["ticker"] == t]
+        got = forecast_avg3y(dt, pt, 2026, half="H1")
+        good = abs(got - exp) < 1e-2
+        ok &= good
+        print(f"   {t:5s} got={got:.4f} expect={exp:.4f} {'OK' if good else 'BAD'}")
+    # regression guard: before the fix this would equal the bare baseline (no subtraction at all)
+    # because h1_actual(2026) is always 0 at a Jan-1 entry -- catch that regression explicitly
+    pt, dt = prices[prices.ticker == "PTT"], divs[divs.ticker == "PTT"]
+    bare_baseline = sum(v for _, v in _prior_annuals(dt, pt, 2026, n=3)) / 3
+    got_h1 = forecast_avg3y(dt, pt, 2026, half="H1")
+    not_bare = abs(got_h1 - bare_baseline) > 1e-6
+    ok &= not_bare
+    print(f"   regression guard (H1 must subtract h2_actual(Y-1), not 0): "
+          f"baseline={bare_baseline:.4f} vs H1_forecast={got_h1:.4f} {'OK' if not_bare else 'BAD'}")
 
     # ---- 2) greedy_allocate: sum=1, bounds, count, corner shape ----
     print("== greedy_allocate ==")
@@ -353,6 +415,20 @@ if __name__ == "__main__":
         print(f"   [{m:8s}] picks={picked} exp_div={r['expected_dividend']:,.0f} "
               f"({r['expected_dividend']/r['capital']*100:.2f}%) leftover={r['leftover_cash']:,.0f} "
               f"{'OK' if okrun else 'BAD'}")
+
+    # ---- 4b) run() at a H1 entry (2026-01-05) -- confirms `half` propagates through score_universe
+    # end-to-end and the H1 fix isn't just correct in isolation but wired up correctly too ----
+    print("== run() entry 2026-01-05 (H1) ==")
+    for m in METHODS:
+        r = run("2026-01-05", m)
+        okhalf = r["half"] == "H1"
+        picked = [row.ticker for row in r["portfolio"].itertuples() if row.shares > 0]
+        okrun = (okhalf and abs(sum(r["weights"].values()) - 1.0) < 1e-9
+                 and len(picked) >= MIN_STOCKS and r["leftover_cash"] >= -1e-6
+                 and r["expected_dividend"] >= 0)
+        ok &= okrun
+        print(f"   [{m:8s}] half={r['half']} picks={picked} exp_div={r['expected_dividend']:,.0f} "
+              f"({r['expected_dividend']/r['capital']*100:.2f}%) {'OK' if okrun else 'BAD'}")
 
     # ---- 5) backtest 2023-2026: past years realized, 2026 pending ----
     print("== run_backtest 2023-2026 (avg3y) ==")
