@@ -22,7 +22,7 @@ import pandas as pd
 
 _SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "thai-dividend-backtest", "src")
 sys.path.insert(0, _SRC)
-import common as C  # noqa: E402  (sys.path set just above)
+import common as C # type: ignore
 
 # ---- constants specific to this tool ----
 LOT_SIZE = 100

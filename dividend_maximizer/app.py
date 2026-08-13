@@ -18,7 +18,7 @@ import plotly.express as px
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import optimizer as O  # noqa: E402
-import common as C     # noqa: E402  (optimizer put ../thai-dividend-backtest/src on the path)
+import common as C    # type: ignore
 
 st.set_page_config(page_title="Dividend Maximizer", layout="wide")
 
