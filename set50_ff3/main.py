@@ -1,0 +1,96 @@
+"""
+main.py — CLI entrypoint
+========================
+รูปแบบใช้งาน:
+  python main.py factors                 # สร้าง factor series รายเดือน + บันทึก CSV
+  python main.py factors --no-cache      # บังคับ re-fetch ข้อมูลใหม่จาก yfinance
+  python main.py regress PTT.BK          # รัน FF3 regression กับหุ้นเป้าหมาย
+  python main.py regress PTT.BK KBANK.BK # หลายตัวได้
+  python main.py sanity                  # correlation SMB/HML + cross-check universe vs หุ้น
+  python main.py export                  # เขียน CSV: membership+weight (รายปี) และ return 6 พอร์ต
+"""
+
+from __future__ import annotations
+
+import argparse
+
+import pandas as pd
+
+import export_portfolios
+import pipeline
+from data.risk_free import fetch_risk_free_rate
+from regression import fetch_stock_excess_return, run_ff3_regression, summarize
+
+
+def _load_or_build_factors(no_cache: bool) -> pd.DataFrame:
+    f = pipeline.build_factors(use_cache=not no_cache)
+    pipeline.save_factors(f)
+    return f
+
+
+def cmd_factors(args):
+    f = _load_or_build_factors(args.no_cache)
+    print(f"factor months: {len(f)}  ({f.index.min().date()} → {f.index.max().date()})")
+    print(f.round(4).to_string())
+    print("\nsaved -> factors_monthly.csv")
+
+
+def cmd_regress(args):
+    f = _load_or_build_factors(args.no_cache)
+    rf = fetch_risk_free_rate(f.index)
+    for ticker in args.tickers:
+        try:
+            ex = fetch_stock_excess_return(ticker, rf)
+            res = run_ff3_regression(ex, f)
+            print("\n" + summarize(ticker, res))
+        except Exception as e:
+            print(f"\n{ticker}: ❌ {e}")
+
+
+def cmd_sanity(args):
+    f = _load_or_build_factors(args.no_cache)
+    corr = f[["Mkt-RF", "SMB", "HML"]].corr()
+    print("Correlation matrix (Mkt-RF, SMB, HML):")
+    print(corr.round(3).to_string())
+    c = corr.loc["SMB", "HML"]
+    verdict = "✅ ต่ำตามคาด (< 0.3)" if abs(c) < 0.3 else "⚠️ สูงกว่าคาด"
+    print(f"\nSMB–HML corr = {c:+.3f}  {verdict}")
+    print(f"\nUniverse VW return เฉลี่ยต่อเดือน = {f['Univ'].mean():+.4f}")
+    print(f"Mkt-RF เฉลี่ยต่อเดือน            = {f['Mkt-RF'].mean():+.4f}")
+
+
+def cmd_export(args):
+    info = export_portfolios.export(use_cache=not args.no_cache)
+    print(f"[1] {info['membership_path']}  — {info['membership_rows']} แถว "
+          f"(หุ้น×รอบ reform)")
+    print(f"    reform รายปี (มิ.ย.): {info['rebalance_dates']}")
+    print(f"[2] {info['returns_path']}  — {info['returns_months']} เดือน "
+          f"({info['returns_span'][0].date()} → {info['returns_span'][1].date()})")
+    m = info["membership_preview"]
+    print("\nจำนวนหุ้นต่อพอร์ต แยกปี:")
+    print(m.pivot_table(index="year", columns="portfolio", values="ticker",
+                        aggfunc="count", fill_value=0).to_string())
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="SET50 Fama-French 3-Factor pipeline")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--no-cache", action="store_true",
+                        help="บังคับ re-fetch ข้อมูลจาก yfinance")
+
+    sub.add_parser("factors", parents=[common]).set_defaults(func=cmd_factors)
+
+    rp = sub.add_parser("regress", parents=[common])
+    rp.add_argument("tickers", nargs="+", help="เช่น PTT.BK KBANK.BK")
+    rp.set_defaults(func=cmd_regress)
+
+    sub.add_parser("sanity", parents=[common]).set_defaults(func=cmd_sanity)
+    sub.add_parser("export", parents=[common]).set_defaults(func=cmd_export)
+    return p
+
+
+if __name__ == "__main__":
+    args = build_parser().parse_args()
+    args.func(args)

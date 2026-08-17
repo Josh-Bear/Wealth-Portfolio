@@ -1,0 +1,6 @@
+data/cache/
+factors_monthly.csv
+portfolios_membership.csv
+portfolio_returns_monthly.csv
+__pycache__/
+*.pyc
