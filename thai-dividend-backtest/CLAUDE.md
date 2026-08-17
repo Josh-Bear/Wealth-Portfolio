@@ -4,7 +4,7 @@ Guidance for Claude Code (and humans) working in this repository.
 
 ## What this project is
 
-A **walk-forward backtest** for Thai dividend-yield portfolios. Four scoring methods assign each
+A **walk-forward backtest** for Thai dividend-yield portfolios. Five scoring methods assign each
 stock a yield-based score; scores become portfolio weights via **capped proportional weighting**
 (no LP). Each method produces one portfolio per entry point, **bought once and measured at 4
 checkpoints** (3/6/9/12 months). Capital 100M THB.
@@ -33,7 +33,7 @@ denominator. A dividend with **no price strictly before its ex-date** (i.e. it p
 `price_history`, which starts 2014 while `dividend_history` goes back to ~2000) is **skipped, not
 fabricated** with a later price.
 
-## The 4 scoring methods (all on YIELD, walk-forward — only ex-dates before entry)
+## The 5 scoring methods (all on YIELD, walk-forward — only ex-dates before entry)
 
 1. **avg_yield** — mean of the per-dividend yields; optional `trim_outliers` drops yields above the
    95th percentile (top-only; toggle in the dashboard).
@@ -42,8 +42,11 @@ fabricated** with a later price.
    uses a shorter window when <12m of history exists; `raw_score = max(mean, 0)`.
 4. **growth_trend** — linear trend fit on the per-dividend yield series (ordinal date → yield),
    projected to the entry date; `max(proj, 0)`; falls back to latest yield when <2 points.
+5. **ttm_yield_sum** — sum of the per-dividend yields whose ex-date falls in the trailing 12 months
+   before entry (a TTM-style yield); no fallback (an off-cycle entry legitimately scores 0).
 
-`weight_i (pre-cap) = raw_score_i / Σ raw_score`.
+`weight_i (pre-cap) = raw_score_i / Σ raw_score`. `METHODS` lives in both `src/engine.py` and
+`src/dashboard.py` — add a method to both (plus `MLABEL`/`MCOLORS` in the dashboard).
 
 ## Capping (water-filling — `weighting.py`)
 
@@ -70,6 +73,11 @@ is after `TODAY` (2026-08-07) is `pending`; the dashboard shows `*` for it.
 - **Availability:** stocks without a price/history at an entry are excluded (OR before 2021-02,
   SCB/SCBX before ~2022-11). Core keeps its 5% floor if it trades.
 - **No fabrication:** missing data stays missing (dividends predating price history are skipped).
+- **`dividend_history` extra columns:** `payment_date` is merged from StockAnalysis (recent rows
+  only, ~2016+; older rows blank) and `dividend_type` is a **heuristic** interim/final label derived
+  from the ex-date half-year (H1→final, H2→interim; AOT forced final). `announcement_date` stays
+  blank — no free source. The engine only uses `ex_dividend_date` + `dps_amount`; the extras are
+  informational (a licensed feed like SETSMART/Refinitiv would be needed to fill them authoritatively).
 
 ## Pipeline — run in order (from repo root)
 
@@ -95,7 +103,7 @@ selected universe / trim setting via the shared `engine.enabled_smap` + `engine.
 - `src/engine.py` — the 4 scores, realized-per-checkpoint, shared `enabled_smap`/`build_portfolio`,
   batch backtest.
 - `src/dashboard.py` — Streamlit dashboard (live universe/trim, single-entry focus, `*` for pending,
-  baht view, score transparency).
+  baht view, score transparency). Entry-point pickers list months **newest-first** (`ENTRIES_DESC`).
 - `src/fetch_data.py` — Phase 1-2 data collection (yfinance primary, StockAnalysis cross-check).
 - `data/` — inputs (`price_history`, `dividend_history`, `stock_master`, `data_completeness`,
   `source_crosscheck`) + engine outputs (`scores`, `realized`, `weights`, `results`).
