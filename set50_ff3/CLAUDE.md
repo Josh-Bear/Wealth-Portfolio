@@ -47,7 +47,13 @@ set50_ff3/
 ├── pipeline.py               # run(): annual-June rebalance → factors + 6-port returns + memberships
 ├── export_portfolios.py      # เขียน portfolios_membership.csv + portfolio_returns_monthly.csv
 ├── regression.py             # run_ff3_regression() (statsmodels OLS)
-├── main.py                   # CLI: factors | regress <ticker...> | sanity | export
+├── significance/             # ทดสอบ premium ของ 3 factor (ต่อยอดจาก factor_significance_plan.md)
+│   ├── basic_test.py         # one_sample_ttest(), test_all_factors()  (full-sample)
+│   ├── subperiod.py          # split_subperiods(), compare_subperiods()  (early vs recent)
+│   ├── rolling.py            # rolling_tstat()  (window 24, step 3)
+│   ├── robust_se.py          # newey_west_ttest()  (HAC-adjusted SE)
+│   └── report.py             # build_significance_report()  (orchestrate 4 tests)
+├── main.py                   # CLI: factors | regress <ticker...> | sanity | export | significance
 ├── tests/test_factors.py     # unit tests (25/25, 15/20/15, VW, SMB/HML)
 └── probe_data_availability.py# script probe ก่อนสร้าง pipeline (Next Step ข้อ 7)
 ```
@@ -60,8 +66,15 @@ python main.py factors                 # สร้าง factor series → facto
 python main.py regress PTT.BK KBANK.BK # FF3 regression กับหุ้นเป้าหมาย
 python main.py sanity                  # เช็ค corr(SMB,HML) + universe VW return
 python main.py export                  # เขียน CSV membership+weight (รายปี) + return 6 พอร์ต
+python main.py significance            # ทดสอบ premium 3 factor (full/sub-period/Newey-West/rolling)
 python -m pytest tests/ -q             # unit tests
 ```
+
+**Factor significance** (`significance`): ทดสอบ H0: mean(factor)=0 ด้วย 4 วิธี — full-sample
+t-test, sub-period split (median ~19/19, หรือ `--split-date`), Newey-West HAC (แก้ autocorrelation),
+rolling t-stat (`--window`, default 24). Threshold หลัก p<0.05. Output: `significance_report.csv`,
+`significance_rolling_tstat.csv`. **ข้อควรระวัง**: n=38 เดือน → power ต่ำ, sub-period ~19/19 ยิ่งต่ำ
+→ อ่าน p-value อย่างระมัดระวัง (ดู `factor_significance_plan.md` section 3).
 
 **Output CSV** (จาก `export`):
 - `portfolios_membership.csv` — 1 แถว/หุ้น/รอบ reform: `rebalance_date, year, portfolio, ticker,

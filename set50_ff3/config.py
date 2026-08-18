@@ -16,7 +16,7 @@ config.py — ค่าคงที่กลางของ pipeline SET50 FF3 (
 """
 
 # ---- universe / data window ----------------------------------------------
-LOOKBACK_YEARS = 5           # yfinance ให้ราคารายเดือน ~60 เดือน (probe ยืนยันแล้ว)
+LOOKBACK_YEARS = 15           # yfinance ให้ราคารายเดือน ~60 เดือน (probe ยืนยันแล้ว)
 PRICE_INTERVAL = "1mo"
 
 # ---- risk-free rate (Open Item #3: ค่าคงที่ปรับได้) -----------------------

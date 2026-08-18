@@ -2,5 +2,7 @@ data/cache/
 factors_monthly.csv
 portfolios_membership.csv
 portfolio_returns_monthly.csv
+significance_report.csv
+significance_rolling_tstat.csv
 __pycache__/
 *.pyc
